@@ -16,10 +16,17 @@ try:
 except ImportError:
     SimulatedDataGenerator = None
 
+try:
+    from .video_generator import VideoGenerator
+except ImportError:
+    VideoGenerator = None
+
 __all__ = ['load_config', 'DataLoader']
 
 if ReflectDataLoader is not None:
     __all__.append('ReflectDataLoader')
 if SimulatedDataGenerator is not None:
     __all__.append('SimulatedDataGenerator')
+if VideoGenerator is not None:
+    __all__.append('VideoGenerator')
 
