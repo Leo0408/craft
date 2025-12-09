@@ -37,8 +37,53 @@ class LLMPrompter:
                 'template-user': 'Task: {task}\nPlan: {plan}\nFinal State: {final_state}\nExpected Goal: {goal}\nWhat went wrong in the plan?'
             },
             'constraint-generator': {
-                'template-system': 'You are a constraint generator for robot tasks. Generate logical constraints based on scene graphs and task requirements.',
-                'template-user': 'Task: {task}\nScene Graph: {scene_graph}\nTask Goal: {goal}\nGenerate logical constraints that must be satisfied for this task. Format: constraint_description (constraint_condition)'
+                'template-system': 'You are a constraint generator for robot tasks. Generate structured logical constraints in JSON format with executable AST expressions.',
+                'template-user': '''Task: {task}
+Scene Graph: {scene_graph}
+Task Goal: {goal}
+
+Generate logical constraints in the following JSON format:
+{{
+  "constraints": [
+    {{
+      "id": "C1",
+      "type": "pre",  // "pre" (precondition), "post" (postcondition), "invariant", or "goal"
+      "description": "Machine must be open before inserting a cup",
+      "condition_expr": "(eq machine.door 'open')",  // Executable AST/DSL expression in LISP format
+      "severity": "hard",  // "hard" or "soft"
+      "eval_time": "pre"  // "pre" (before action), "post" (after action), "now" (current state), or "final" (task completion)
+    }}
+  ]
+}}
+
+AST Expression Format:
+- Location: (inside obj container), (on_top_of obj surface)
+- State: (eq obj.state 'open'), (eq obj.state 'closed'), (eq obj.state 'empty')
+- Combined: (and (inside mug sink) (not (inside mug coffee_machine)))
+- Negation: (not (inside obj container))
+
+Generate constraints covering:
+1. Preconditions (must be satisfied before actions)
+   - For put_in actions: container must be empty (e.g., "Coffee machine must be empty before inserting mug")
+   - For put_on actions: surface must be clear
+   - For toggle actions: object must be accessible
+2. Postconditions (must be satisfied after actions)
+3. Invariants (must always be satisfied)
+4. Goal constraints (final success conditions)
+5. Causal chains (e.g., fill → has_water → heat)
+6. **Occupancy constraints** (containers must be empty before insertion)
+
+Example occupancy constraint for put_in:
+{{
+  "id": "C8",
+  "type": "pre",
+  "description": "Coffee machine must be empty before inserting mug",
+  "condition_expr": "(empty coffee_machine)",
+  "severity": "hard",
+  "eval_time": "pre"
+}}
+
+Return ONLY valid JSON, no additional text.'''
             },
             'causal-verifier': {
                 'template-system': 'You are a causal logic verifier. Verify if the causal relationships in a scene graph are logically consistent.',

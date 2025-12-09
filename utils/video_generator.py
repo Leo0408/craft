@@ -96,8 +96,42 @@ class VideoGenerator:
         
         # Convert figure to numpy array
         fig.canvas.draw()
-        buf = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-        buf = buf.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        # Handle different matplotlib versions
+        try:
+            # Method 1: buffer_rgba (matplotlib 3.5+, recommended)
+            buf = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
+            h, w = fig.canvas.get_width_height()
+            buf = buf.reshape((h, w, 4))
+            buf = buf[:, :, :3]  # Remove alpha channel, keep RGB
+        except (AttributeError, TypeError) as e:
+            # Method 2: print_to_buffer (alternative)
+            try:
+                buf_data = fig.canvas.print_to_buffer()
+                buf = np.frombuffer(buf_data[0], dtype=np.uint8)
+                h, w = fig.canvas.get_width_height()
+                buf = buf.reshape((h, w, 4))
+                buf = buf[:, :, :3]  # Remove alpha channel
+            except (AttributeError, TypeError) as e2:
+                # Method 3: Fallback - Save to buffer and read back with PIL
+                try:
+                    import io
+                    buf_io = io.BytesIO()
+                    fig.savefig(buf_io, format='png', bbox_inches='tight', dpi=100)
+                    buf_io.seek(0)
+                    from PIL import Image
+                    img = Image.open(buf_io)
+                    buf = np.array(img)
+                    # Handle RGBA or RGB
+                    if len(buf.shape) == 3 and buf.shape[2] == 4:
+                        buf = buf[:, :, :3]  # Remove alpha channel
+                    elif len(buf.shape) == 3 and buf.shape[2] == 3:
+                        pass  # Already RGB
+                    buf_io.close()
+                except Exception as e3:
+                    # Final fallback: Create a blank image
+                    h, w = fig.canvas.get_width_height()
+                    buf = np.zeros((h, w, 3), dtype=np.uint8)
+                    print(f"⚠️  Warning: All matplotlib conversion methods failed, using blank image. Last error: {e3}")
         plt.close(fig)
         
         return buf

@@ -15,14 +15,28 @@ class Node:
     state: Optional[str] = None  # e.g., "open", "closed", "filled"
     position: Optional[Tuple[float, float, float]] = None
     attributes: Dict = None
+    # Enhanced attributes for CRAFT++
+    bbox: Optional[Dict] = None  # Bounding box: {"min": [x,y,z], "max": [x,y,z]}
+    pose: Optional[Dict] = None  # Pose: {"position": [x,y,z], "rotation": [x,y,z]}
+    confidence: float = 1.0  # Detection confidence (0.0-1.0)
+    last_seen_ts: Optional[float] = None  # Timestamp when last seen
+    velocity: Optional[Tuple[float, float, float]] = None  # Velocity vector
     
     def __init__(self, name: str, object_type: str, state: Optional[str] = None, 
-                 position: Optional[Tuple[float, float, float]] = None, attributes: Dict = None):
+                 position: Optional[Tuple[float, float, float]] = None, attributes: Dict = None,
+                 bbox: Optional[Dict] = None, pose: Optional[Dict] = None,
+                 confidence: float = 1.0, last_seen_ts: Optional[float] = None,
+                 velocity: Optional[Tuple[float, float, float]] = None):
         self.name = name
         self.object_type = object_type
         self.state = state
         self.position = position
         self.attributes = attributes or {}
+        self.bbox = bbox
+        self.pose = pose
+        self.confidence = confidence
+        self.last_seen_ts = last_seen_ts
+        self.velocity = velocity
     
     def get_name(self) -> str:
         """Get full name with state if available"""

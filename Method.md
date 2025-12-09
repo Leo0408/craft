@@ -339,3 +339,106 @@ Violation: cannot heat kettle with no water
 #️⃣ 10. 总结（最凝练的论文式描述）
 
 我们提出 CRAFT++，一个结合任务逻辑、可执行条件与环境记忆的失败检测框架。与依赖 LLM 概率性推理的现有方法相比，CRAFT++ 将任务知识转换为可执行逻辑表达式，通过时序建模与几何检查实现确定性、可解释的失败判定，从根本上解决遮挡、感知噪声、物理不一致与因果链缺失等真实场景中的核心问题。
+
+---
+
+#️⃣ 11. 优化方案（基于 demo1.ipynb 分析）
+
+基于实际实现（`demo1.ipynb`）的分析，以下是高优先级和中优先级的优化方案：
+
+## 11.1 高优先级优化
+
+### 11.1.1 约束生成格式优化
+
+**问题**：LLM 生成的是自然语言格式，缺少结构化 JSON 和可执行 AST。
+
+**解决方案**：
+- 改进 LLM Prompt，要求生成结构化 JSON 格式
+- JSON 包含：`id`, `type`, `description`, `condition_expr`, `severity`, `eval_time`
+- LLM 直接生成可执行的 `condition_expr`（AST 格式）
+
+**实现位置**：
+- `reasoning/llm_prompter.py`：更新 `constraint-generator` prompt
+- `reasoning/constraint_generator.py`：更新 `_parse_constraints` 方法支持 JSON 解析
+
+### 11.1.2 约束编译格式优化
+
+**问题**：当前格式 `Mug is_inside Sink` 无法直接执行。
+
+**解决方案**：
+- 生成标准 AST 格式：`(inside mug sink)`
+- 支持复杂逻辑组合：`(and (inside mug sink) (not (inside mug coffee_machine)))`
+- 如果 LLM 已生成 `condition_expr`，直接使用
+
+**实现位置**：
+- `reasoning/constraint_generator.py`：改进 `compile_constraint` 方法
+
+### 11.1.3 时序验证优化
+
+**问题**：没有区分 pre/post 约束的评估时间，只在最终状态验证。
+
+**解决方案**：
+- 创建 `ConstraintEvaluator` 类评估 AST 表达式
+- 在动作前验证 precondition
+- 在动作后验证 postcondition
+- 持续验证 invariant
+- 在任务完成时验证 goal
+
+**实现位置**：
+- `reasoning/constraint_evaluator.py`：新建约束评估器
+- `demo1.ipynb` Step 6：添加时序验证逻辑
+
+## 11.2 中优先级优化
+
+### 11.2.1 场景图属性完善
+
+**问题**：缺少时间特征和几何属性。
+
+**解决方案**：
+- 更新 `Node` 类添加：`bbox`, `pose`, `confidence`, `last_seen_ts`, `velocity`
+- 在场景图生成时填充这些属性
+
+**实现位置**：
+- `core/scene_graph.py`：更新 `Node` 类
+- `demo1.ipynb` Step 3：填充属性
+
+### 11.2.2 因果链约束支持
+
+**问题**：缺少跨动作的因果依赖约束。
+
+**解决方案**：
+- 在 LLM Prompt 中添加因果链要求
+- 添加 `causal_chain` 约束类型
+- 验证时检查因果链依赖
+
+**实现位置**：
+- `reasoning/llm_prompter.py`：更新 prompt
+- `reasoning/constraint_generator.py`：支持因果链类型
+- `demo1.ipynb` Step 6：添加因果链验证
+
+## 11.3 完整实现流程
+
+```
+1. 数据生成 (AI2THOR)
+   ↓
+2. 场景图生成（包含完整属性）
+   ↓
+3. 约束生成 (LLM) → 结构化 JSON + AST
+   ↓
+4. 约束编译（可选，如果 LLM 已生成则跳过）
+   ↓
+5. 时序验证（动作前后分别验证）
+   ↓
+6. 失败检测（使用 ConstraintEvaluator）
+   ↓
+7. 渐进式解释（包含因果链分析）
+```
+
+## 11.4 预期效果
+
+- ✅ 约束质量提升：结构化 JSON + 可执行 AST
+- ✅ 验证准确性提升：时序验证能够准确检测动作相关的违反
+- ✅ 场景图信息完整性：包含时间和几何属性
+- ✅ 因果链支持：能够检测因果违反
+
+详细优化方案请参考：`Method_OPTIMIZATION.md`

@@ -41,7 +41,7 @@ class ConstraintGenerator:
         response, _ = self.llm_prompter.query(
             prompt_info['template-system'],
             user_prompt,
-            max_tokens=800
+            max_tokens=2000  # Increase for JSON output
         )
         
         # Parse constraints from response
@@ -54,12 +54,49 @@ class ConstraintGenerator:
         Parse LLM response into structured constraint list
         
         Args:
-            llm_response: LLM response text
+            llm_response: LLM response text (should be JSON format)
             
         Returns:
-            List of constraint dictionaries with type annotation
+            List of constraint dictionaries with structured fields
         """
         constraints = []
+        
+        # Try to parse as JSON first
+        try:
+            import json
+            # Extract JSON from response (handle markdown code blocks)
+            response_text = llm_response.strip()
+            if '```json' in response_text:
+                response_text = response_text.split('```json')[1].split('```')[0].strip()
+            elif '```' in response_text:
+                response_text = response_text.split('```')[1].split('```')[0].strip()
+            
+            # Try to parse JSON
+            data = json.loads(response_text)
+            if 'constraints' in data:
+                for constraint in data['constraints']:
+                    # Normalize constraint type
+                    constraint_type = constraint.get('type', 'precondition')
+                    if constraint_type == 'pre':
+                        constraint_type = 'precondition'
+                    elif constraint_type == 'post':
+                        constraint_type = 'postcondition'
+                    
+                    constraints.append({
+                        'id': constraint.get('id', f'C{len(constraints)+1}'),
+                        'type': constraint_type,
+                        'description': constraint.get('description', ''),
+                        'condition_expr': constraint.get('condition_expr', ''),
+                        'severity': constraint.get('severity', 'hard'),
+                        'eval_time': constraint.get('eval_time', 'now'),
+                        'condition': constraint.get('condition_expr', '')  # For backward compatibility
+                    })
+                return constraints
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            # Fallback to old parsing method if JSON parsing fails
+            print(f"⚠️  Failed to parse JSON constraints, falling back to text parsing: {e}")
+        
+        # Fallback: Parse as text format (backward compatibility)
         lines = llm_response.split('\n')
         
         for line in lines:
@@ -97,16 +134,19 @@ class ConstraintGenerator:
                 constraint_type = 'invariant'
             else:
                 # Default: try to infer from context
-                # If it's about current state check, it's likely precondition
                 if 'must be' in description_lower and not 'moved' in description_lower:
                     constraint_type = 'precondition'
                 else:
-                    constraint_type = 'postcondition'  # Default for action-related constraints
+                    constraint_type = 'postcondition'
             
             constraints.append({
+                'id': f'C{len(constraints)+1}',
                 'description': description,
                 'condition': condition,
+                'condition_expr': condition or '',  # Use condition as condition_expr
                 'type': constraint_type,
+                'severity': 'hard',
+                'eval_time': 'pre' if constraint_type == 'precondition' else 'post' if constraint_type == 'postcondition' else 'now',
                 'raw': line
             })
         
@@ -400,4 +440,141 @@ class ConstraintGenerator:
                     return True
         
         return False
+    
+    def compile_constraint(self, constraint: Dict) -> Optional[str]:
+        """
+        Compile constraint description to executable condition expression (AST/DSL)
+        
+        Args:
+            constraint: Constraint dictionary with 'description', 'type', 'condition'
+            
+        Returns:
+            Executable condition expression string, or None if cannot compile
+            Examples:
+                "(empty coffee_machine)"
+                "(inside mug coffee_machine)"
+                "(eq machine.door 'open')"
+        """
+        description = constraint.get('description', '').lower()
+        constraint_type = constraint.get('type', 'precondition')
+        
+        # If constraint already has a condition expression, use it
+        if constraint.get('condition'):
+            return constraint.get('condition')
+        
+        # Pattern 1: State constraints - "must be empty/open/closed/filled"
+        if 'must be' in description:
+            words = description.split()
+            try:
+                must_idx = words.index('must')
+                be_idx = words.index('be', must_idx) if 'be' in words[must_idx:] else must_idx + 1
+                
+                # Extract object name (before "must")
+                obj_name = ' '.join(words[:must_idx]).strip()
+                if not obj_name:
+                    # Try alternative: "The X must be..."
+                    if words[0].lower() == 'the':
+                        obj_name = ' '.join(words[1:must_idx]).strip()
+                
+                # Extract state/location (after "be")
+                condition_part = ' '.join(words[be_idx+1:]).strip()
+                
+                # State constraints
+                if any(state in condition_part for state in ['empty', 'open', 'closed', 'filled', 'clean']):
+                    # Format: (eq obj.state 'state')
+                    state = condition_part.split()[0] if condition_part.split() else condition_part
+                    obj_var = obj_name.replace(' ', '_').lower()
+                    # Use eq format for state checks
+                    return f"(eq {obj_var}.state '{state}')"
+                
+                # Location constraints - "must be on/inside/in"
+                if any(loc in condition_part for loc in ['on', 'inside', 'in', 'on top of']):
+                    # Extract location
+                    if 'on top of' in condition_part:
+                        location = condition_part.replace('on top of', '').strip()
+                        obj_var = obj_name.replace(' ', '_').lower()
+                        loc_var = location.replace(' ', '_').lower()
+                        return f"(on_top_of {obj_var} {loc_var})"
+                    elif 'inside' in condition_part or 'in' in condition_part:
+                        location = condition_part.replace('inside', '').replace('in', '').strip()
+                        obj_var = obj_name.replace(' ', '_').lower()
+                        loc_var = location.replace(' ', '_').lower()
+                        return f"(inside {obj_var} {loc_var})"
+                    elif 'on' in condition_part:
+                        location = condition_part.replace('on', '').strip()
+                        obj_var = obj_name.replace(' ', '_').lower()
+                        loc_var = location.replace(' ', '_').lower()
+                        return f"(on_top_of {obj_var} {loc_var})"
+            except (ValueError, IndexError):
+                pass
+        
+        # Pattern 2: Negative constraints - "must not be"
+        if 'must not' in description:
+            words = description.split()
+            try:
+                must_idx = words.index('must')
+                not_idx = words.index('not', must_idx)
+                be_idx = words.index('be', not_idx) if 'be' in words[not_idx:] else not_idx + 1
+                
+                obj_name = ' '.join(words[:must_idx]).strip()
+                if not obj_name and words[0].lower() == 'the':
+                    obj_name = ' '.join(words[1:must_idx]).strip()
+                
+                condition_part = ' '.join(words[be_idx+1:]).strip()
+                
+                if 'inside' in condition_part or 'in' in condition_part:
+                    location = condition_part.replace('inside', '').replace('in', '').strip()
+                    obj_var = obj_name.replace(' ', '_').lower()
+                    loc_var = location.replace(' ', '_').lower()
+                    return f"(not (inside {obj_var} {loc_var}))"
+            except (ValueError, IndexError):
+                pass
+        
+        # Pattern 3: Movement constraints - "must be moved from X to Y"
+        if 'must be moved from' in description and 'to' in description:
+            words = description.split()
+            try:
+                from_idx = words.index('from')
+                to_idx = words.index('to', from_idx)
+                
+                obj_name = ' '.join(words[:words.index('must')]).strip()
+                if not obj_name and words[0].lower() == 'the':
+                    obj_name = ' '.join(words[1:words.index('must')]).strip()
+                
+                source = ' '.join(words[from_idx+1:to_idx]).strip()
+                dest = ' '.join(words[to_idx+1:]).strip()
+                
+                obj_var = obj_name.replace(' ', '_').lower()
+                source_var = source.replace(' ', '_').lower()
+                dest_var = dest.replace(' ', '_').lower()
+                
+                # Postcondition: object should be at destination, not at source
+                return f"(and (inside {obj_var} {dest_var}) (not (inside {obj_var} {source_var})))"
+            except (ValueError, IndexError):
+                pass
+        
+        # Pattern 4: Container empty - "container must be empty"
+        if 'empty' in description and ('container' in description or 'machine' in description):
+            words = description.split()
+            try:
+                empty_idx = words.index('empty')
+                # Find container name before "must be empty"
+                must_idx = words.index('must') if 'must' in words else 0
+                container_name = ' '.join(words[:must_idx]).strip()
+                if not container_name and words[0].lower() == 'the':
+                    container_name = ' '.join(words[1:must_idx]).strip()
+                
+                if container_name:
+                    container_var = container_name.replace(' ', '_').lower()
+                    return f"(empty {container_var})"
+            except (ValueError, IndexError):
+                pass
+        
+        # Default: try to extract simple condition from description
+        # Use the constraint's condition field if available
+        if constraint.get('condition'):
+            return constraint.get('condition')
+        
+        # If we can't compile, return None (will be skipped)
+        return None
 
