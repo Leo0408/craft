@@ -588,16 +588,115 @@ def drop(taskUtil, failure_injection_idx: int):
 
 def save_data(taskUtil, event, replan: bool = False):
     """
-    Save event data (simplified version)
+    Save event data including frames (like REFLECT)
     
     Args:
         taskUtil: TaskUtil instance
         event: AI2THOR event
         replan: Whether this is a replan action
     """
+    import os
+    import pickle
+    import matplotlib.pyplot as plt
+    import numpy as np
+    
+    print(f"[DEBUG] save_data: Called for step {taskUtil.counter + 1}, event={event is not None}")
+    
     taskUtil.counter += 1
-    # In a full implementation, this would save frames, metadata, etc.
-    # For now, we just increment the counter and store the event
+    
+    # Determine folder (like REFLECT)
+    if replan:
+        folder = 'recovery'
+    else:
+        folder = 'thor_tasks'
+    
+    # Create directories
+    base_path = getattr(taskUtil, 'repo_path', os.getcwd())
+    specific_folder = getattr(taskUtil, 'specific_folder_name', taskUtil.folder_name if hasattr(taskUtil, 'folder_name') else 'default')
+    
+    events_dir = f'{base_path}/{folder}/{specific_folder}/events'
+    ego_img_dir = f'{base_path}/{folder}/{specific_folder}/ego_img'
+    
+    print(f"[DEBUG] save_data: Creating directories:")
+    print(f"  events_dir: {events_dir}")
+    print(f"  ego_img_dir: {ego_img_dir}")
+    
+    try:
+        os.makedirs(events_dir, exist_ok=True)
+        os.makedirs(ego_img_dir, exist_ok=True)
+        print(f"[DEBUG] save_data: Directories created successfully")
+    except Exception as dir_error:
+        print(f"[DEBUG] save_data: Failed to create directories: {dir_error}")
+        import traceback
+        traceback.print_exc()
+        return
+    
+    # Save event as pickle (like REFLECT)
+    event_path = f'{events_dir}/step_{taskUtil.counter}.pickle'
+    try:
+        with open(event_path, 'wb') as handle:
+            pickle.dump(event, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        print(f"[DEBUG] save_data: Saved event pickle to {event_path}")
+    except Exception as pickle_error:
+        print(f"[DEBUG] save_data: Failed to save pickle: {pickle_error}")
+        import traceback
+        traceback.print_exc()
+    
+    # Save frame to ego_img directory (like REFLECT)
+    try:
+        # Extract frame from event (like REFLECT: directly use e.frame)
+        frame = None
+        print(f"[DEBUG] save_data: Extracting frame from event...")
+        print(f"  event has frame attr: {hasattr(event, 'frame')}")
+        if hasattr(event, 'frame'):
+            print(f"  event.frame is not None: {event.frame is not None}")
+            if event.frame is not None:
+                print(f"  event.frame type: {type(event.frame)}, shape: {event.frame.shape if hasattr(event.frame, 'shape') else 'N/A'}")
+        
+        if hasattr(event, 'frame') and event.frame is not None:
+            # REFLECT style: directly use e.frame
+            frame = event.frame
+            print(f"[DEBUG] save_data: Using event.frame")
+        elif hasattr(event, 'cv2image'):
+            print(f"[DEBUG] save_data: Trying cv2image...")
+            # Fallback: try cv2image
+            if callable(event.cv2image):
+                frame = event.cv2image()
+                print(f"[DEBUG] save_data: Called event.cv2image()")
+            else:
+                frame = event.cv2image
+                print(f"[DEBUG] save_data: Using event.cv2image attribute")
+            # Convert BGR to RGB if needed
+            if frame is not None and len(frame.shape) == 3:
+                import cv2
+                if frame.shape[2] == 3:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    print(f"[DEBUG] save_data: Converted BGR to RGB")
+        
+        if frame is not None:
+            img_path = f'{ego_img_dir}/img_step_{taskUtil.counter}.png'
+            # Use REFLECT style: np.asarray(rgb, order='C')
+            try:
+                plt.imsave(img_path, np.asarray(frame, order='C'))
+                print(f"[DEBUG] save_data: Successfully saved frame for step {taskUtil.counter} to {img_path}")
+            except Exception as save_error:
+                print(f"[DEBUG] save_data: plt.imsave failed for step {taskUtil.counter}: {save_error}")
+                import traceback
+                traceback.print_exc()
+        else:
+            # Debug: print warning if frame is None
+            print(f"[DEBUG] save_data: Frame is None for step {taskUtil.counter}")
+            print(f"[DEBUG] save_data: event has frame attr: {hasattr(event, 'frame')}")
+            if hasattr(event, 'frame'):
+                print(f"[DEBUG] save_data: event.frame is None: {event.frame is None}")
+            print(f"[DEBUG] save_data: event has cv2image attr: {hasattr(event, 'cv2image')}")
+    except Exception as e:
+        # Debug: print error instead of silently failing
+        print(f"[DEBUG] save_data: Failed to save frame for step {taskUtil.counter}: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # Also store event in memory for backward compatibility
     if not hasattr(taskUtil, 'events'):
         taskUtil.events = []
     taskUtil.events.append(event)
