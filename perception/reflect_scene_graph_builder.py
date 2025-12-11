@@ -270,24 +270,25 @@ class ReflectSceneGraphBuilder:
             )
             local_sg.add_node(node)
         
-            # Compute spatial relationships using each object's unique centroid
-            # IMPORTANT: Use pcd_dict (frame-specific) not total_points_dict (accumulated)
-            detections_for_relations = []
-            for label in pcd_dict.keys():
-                if label not in self.bbox3d_dict:
-                    continue
-                # Use THIS FRAME's point cloud for this object
-                obj_points = pcd_dict[label]
-                if len(obj_points) > 0:
-                    # Use centroid of THIS OBJECT'S point cloud
-                    centroid = np.mean(obj_points, axis=0)
-                    detections_for_relations.append({
-                        'label': label,
-                        'position_3d': tuple(centroid)  # Unique position for each object
-                    })
-                    print(f"  Relation input for {label}: {len(obj_points)} points, centroid: {centroid}")
-            
-            relations = self.scene_analyzer.compute_spatial_relations(detections_for_relations)
+        # Compute spatial relationships using each object's unique centroid
+        # IMPORTANT: Use pcd_dict (frame-specific) not total_points_dict (accumulated)
+        # This should be AFTER all nodes are added
+        detections_for_relations = []
+        for label in pcd_dict.keys():
+            if label not in self.bbox3d_dict:
+                continue
+            # Use THIS FRAME's point cloud for this object
+            obj_points = pcd_dict[label]
+            if len(obj_points) > 0:
+                # Use centroid of THIS OBJECT'S point cloud
+                centroid = np.mean(obj_points, axis=0)
+                detections_for_relations.append({
+                    'label': label,
+                    'position_3d': tuple(centroid)  # Unique position for each object
+                })
+                print(f"  Relation input for {label}: {len(obj_points)} points, centroid: {centroid}")
+        
+        relations = self.scene_analyzer.compute_spatial_relations(detections_for_relations)
         
         # Add edges based on spatial relations
         for obj1_name, obj2_name, rel_type, confidence in relations:

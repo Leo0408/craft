@@ -701,3 +701,216 @@ def save_data(taskUtil, event, replan: bool = False):
         taskUtil.events = []
     taskUtil.events.append(event)
 
+
+def pour(taskUtil, src_obj_type: str, target_obj_type: str, 
+         fail_execution: bool = False, replan: bool = False):
+    """
+    Pour liquid from one object to another
+    
+    Args:
+        taskUtil: TaskUtil instance
+        src_obj_type: Source object type (object with liquid)
+        target_obj_type: Target object type (receptacle)
+        fail_execution: Whether to fail execution
+        replan: Whether this is a replan action
+    """
+    print(f"[INFO] Execute action: Pouring liquid from {src_obj_type} to {target_obj_type}")
+    liquid_type = None
+    src_obj_type_in_sim = src_obj_type
+    if src_obj_type in NAME_MAP:
+        src_obj_type_in_sim = NAME_MAP[src_obj_type]
+    target_obj_type_in_sim = target_obj_type
+    if target_obj_type in NAME_MAP:
+        target_obj_type_in_sim = NAME_MAP[target_obj_type]
+
+    if taskUtil.chosen_failure == "wrong_perception":
+        if src_obj_type == taskUtil.failure_injection_params['correct_obj_type']:
+            src_obj_type = taskUtil.failure_injection_params['wrong_obj_type']
+        elif target_obj_type == taskUtil.failure_injection_params['correct_obj_type']:
+            target_obj_type = taskUtil.failure_injection_params['wrong_obj_type']
+
+    target_obj = next(obj for obj in taskUtil.controller.last_event.metadata["objects"] 
+                     if obj["objectType"] == target_obj_type)
+    target_obj_id = target_obj['objectId']
+    src_obj = next(obj for obj in taskUtil.controller.last_event.metadata["objects"] 
+                  if obj["objectType"] == src_obj_type)
+    src_obj_id = src_obj['objectId']
+
+    # Navigate if needed
+    if not target_obj['visible'] and target_obj['objectType'] not in taskUtil.objs_w_unk_loc:
+        navigate_to_obj(taskUtil, target_obj['objectType'], replan=replan)
+
+    # Check if object in hand has liquid
+    obj_in_hand = None
+    for obj in taskUtil.controller.last_event.metadata['objects']:
+        if obj['isPickedUp'] == True:
+            obj_in_hand = obj
+            break
+    
+    if obj_in_hand is not None and obj_in_hand["isFilledWithLiquid"] and src_obj_id == obj_in_hand['objectId']:
+        liquid_type = obj_in_hand['fillLiquid']
+
+        if fail_execution:
+            e = taskUtil.controller.last_event
+            save_data(taskUtil, e, replan=replan)
+            return
+        
+        e = taskUtil.controller.step(
+            action="EmptyLiquidFromObject",
+            objectId=src_obj_id,
+            forceAction=False
+        )
+        e = taskUtil.controller.step(
+            action="FillObjectWithLiquid",
+            objectId=target_obj_id,
+            fillLiquid=liquid_type.lower(),
+            forceAction=False
+        )
+        save_data(taskUtil, e, replan=replan)
+        taskUtil.controller.step(action="Done")
+        taskUtil.interact_actions[taskUtil.counter] = f"Pour {liquid_type.lower() if liquid_type else 'liquid'} from {src_obj_type_in_sim.lower()} into {target_obj_type_in_sim.lower()}"
+
+    time.sleep(1)
+
+
+def dirty_obj(taskUtil, obj_type: str):
+    """
+    Make an object dirty (preaction)
+    
+    Args:
+        taskUtil: TaskUtil instance
+        obj_type: Object type to make dirty
+    """
+    src_obj = next(obj for obj in taskUtil.controller.last_event.metadata["objects"] 
+                  if obj["objectType"] == obj_type)
+    
+    e = taskUtil.controller.step(
+        action="DirtyObject",
+        objectId=src_obj["objectId"],
+        forceAction=True
+    )
+    print("DirtyObject: ", e)
+    taskUtil.controller.step(action="Done")
+
+
+def place_obj(taskUtil, failure_injection_params: dict):
+    """
+    Place objects for failure injection (occupied, blocking, etc.)
+    Based on REFLECT's place_obj function
+    
+    Args:
+        taskUtil: TaskUtil instance
+        failure_injection_params: Parameters for failure injection
+            - src_obj_type: Source object type to place
+            - target_obj_type: Target object type (receptacle)
+            - disp_x, disp_y, disp_z: Displacement offsets
+    """
+    if taskUtil.chosen_failure == "occupied_put":
+        src_obj = next(obj for obj in taskUtil.controller.last_event.metadata["objects"] 
+                      if obj["objectType"] == failure_injection_params['src_obj_type'])
+        target_obj = next(obj for obj in taskUtil.controller.last_event.metadata["objects"] 
+                         if obj["objectType"] == failure_injection_params['target_obj_type'])
+        
+        e = taskUtil.controller.step(
+            action="PickupObject",
+            objectId=src_obj['objectId'],
+            forceAction=True,
+            manualInteract=False
+        )
+        taskUtil.controller.step(action='Done')
+        
+        if failure_injection_params['target_obj_type'] == 'Microwave':
+            taskUtil.controller.step(
+                action="OpenObject",
+                objectId=target_obj['objectId'],
+                forceAction=True
+            )
+            e = taskUtil.controller.step(
+                action="PutObject",
+                objectId=target_obj['objectId'],
+                forceAction=True
+            )
+            taskUtil.controller.step(
+                action="CloseObject",
+                objectId=target_obj['objectId'],
+                forceAction=True
+            )
+            taskUtil.controller.step(action='Done')
+        else:
+            e = taskUtil.controller.step(
+                action="PutObject",
+                objectId=target_obj['objectId'],
+                forceAction=True
+            )
+    elif taskUtil.chosen_failure == "occupied":
+        target_obj_type = failure_injection_params['target_obj_type']
+        if "-" in target_obj_type and target_obj_type.split("-")[0] in ['StoveBurner', 'CounterTop']:
+            for key, val in taskUtil.unity_name_map.items():
+                if val == target_obj_type:
+                    target_obj = next(obj for obj in taskUtil.controller.last_event.metadata["objects"] 
+                                    if obj["name"] == key)
+                    break
+        else:
+            target_obj = next(obj for obj in taskUtil.controller.last_event.metadata["objects"] 
+                            if obj["objectType"] == failure_injection_params['target_obj_type'])
+        
+        objectPoses = []
+        place_location = target_obj['position'].copy()
+        objs = taskUtil.controller.last_event.metadata["objects"]
+        for obj in objs:
+            obj_name = obj['name']
+            obj_type = obj['objectType']
+            pos = obj['position']
+            rot = obj['rotation']
+            if not obj['pickupable'] and not obj['moveable']:
+                continue
+            if obj_type == failure_injection_params['src_obj_type']:
+                pos = place_location.copy()
+                pos['x'] += failure_injection_params.get('disp_x', 0.0)
+                pos['z'] += failure_injection_params.get('disp_z', 0.0)
+                pos['y'] += failure_injection_params.get('disp_y', 0.0)
+            temp_dict = {'objectName': obj_name, 'position': pos, 'rotation': rot}
+            objectPoses.append(temp_dict)
+        
+        e = taskUtil.controller.step(
+            action='SetObjectPoses',
+            objectPoses=objectPoses,
+            placeStationary=False
+        )
+        print("SetObjectPoses (occupied): ", e)
+        taskUtil.controller.step(
+            action="AdvancePhysicsStep",
+            timeStep=0.01
+        )
+        taskUtil.controller.step(action='Done')
+    else:
+        # For blocking and other failure types
+        target_obj = next(obj for obj in taskUtil.controller.last_event.metadata["objects"] 
+                         if obj["objectType"] == failure_injection_params['target_obj_type'])
+        
+        place_location = target_obj['position'].copy()
+        objs = taskUtil.controller.last_event.metadata["objects"]
+        objectPoses = []
+        for obj in objs:
+            obj_name = obj['name']
+            obj_type = obj['objectType']
+            pos = obj['position']
+            rot = obj['rotation']
+            if not obj['pickupable'] and not obj['moveable']:
+                continue
+            if obj_type == failure_injection_params['src_obj_type']:
+                pos = place_location.copy()
+                pos['x'] += failure_injection_params.get('disp_x', 0.0)
+                pos['z'] += failure_injection_params.get('disp_z', 0.0)
+                pos['y'] += failure_injection_params.get('disp_y', 0.0)
+            temp_dict = {'objectName': obj_name, 'position': pos, 'rotation': rot}
+            objectPoses.append(temp_dict)
+        
+        e = taskUtil.controller.step(
+            action='SetObjectPoses',
+            objectPoses=objectPoses,
+            placeStationary=False
+        )
+        taskUtil.controller.step(action='Done')
+        print("SetObjectPoses: ", e)
+
