@@ -4,9 +4,26 @@ Analyzes robot failures using hierarchical reasoning
 """
 
 from typing import List, Dict, Optional, Tuple
-from ..core.scene_graph import SceneGraph
-from ..core.task_executor import TaskExecutor, Action
-from .llm_prompter import LLMPrompter
+
+# Handle imports for both package and standalone contexts
+try:
+    from craft.core.scene_graph import SceneGraph
+    from craft.core.task_executor import TaskExecutor, Action
+except ImportError:
+    try:
+        from ..core.scene_graph import SceneGraph
+        from ..core.task_executor import TaskExecutor, Action
+    except ImportError:
+        from core.scene_graph import SceneGraph
+        from core.task_executor import TaskExecutor, Action
+
+try:
+    from craft.reasoning.llm_prompter import LLMPrompter
+except ImportError:
+    try:
+        from .llm_prompter import LLMPrompter
+    except ImportError:
+        from reasoning.llm_prompter import LLMPrompter
 
 
 class FailureAnalyzer:
