@@ -25,9 +25,18 @@ CRAFT++ 旨在解决零样本 LLM 系统在真实场景失败检测中的三个�
 CRAFT++ 的核心思想是：
 让 LLM 生成可执行约束（Executable Constraints），并通过逻辑引擎与时序记忆进行验证，从而实现与视觉无关、与场景无关的确定性失败检测。
 
+**关键改进（基于 improve1.md 和 improve2.md）**：
+	•	动作级约束（Action-Level Constraints）：约束必须明确绑定到具体动作，而非任务级
+	•	正确区分容器状态和对象状态：容器空/满 vs 对象填充
+	•	动作执行前后分别检查：Precondition 在动作前，Postcondition 在动作后
+	•	失败类型分类：Precondition Violation, Postcondition Violation, Goal Not Achieved
+	•	场景图裁剪：只保留任务相关的最小子图
+	•	**Precondition 失败后立即停止**：如果 Precondition 失败，不再检查后续动作和 Goal（CRAFT 核心逻辑）
+	•	**Goal 只用于成功判定**：Goal 不参与失败溯因，只在没有 Precondition 失败时检查
+
 框架包含三层：
 
-(Perception + Memory) → Scene Graph → Constraint Compiler → Constraint Executor
+(Perception + Memory) → Scene Graph (Task-Relevant Subgraph) → Action-Level Constraint Compiler → Constraint Executor (Action-by-Action)
 
 
 ⸻
@@ -81,56 +90,179 @@ Algorithm BuildSceneGraph(detections, spatial_relations, task_info):
 
 ⸻
 
+#️⃣ 1.1 场景图裁剪（Task-Relevant Subgraph Extraction）
+
+**核心思想**：从完整场景图中裁剪出"与当前子任务相关的最小子图"，减少复杂度，提高约束生成和验证的效率。
+
+**问题**：
+	•	完整场景图可能包含大量无关对象（例如：90个节点，36条边）
+	•	约束生成和验证时只需要关注与任务相关的对象
+	•	减少场景图大小可以：
+		- 降低 LLM 输入长度
+		- 提高约束生成质量
+		- 加快约束验证速度
+
+**解决方案**：
+	•	从任务信息中提取相关对象（从 actions、success_condition、preactions）
+	•	只保留相关对象及其直接关系
+	•	支持精确匹配和部分匹配（处理对象名变体）
+
+✔ 伪代码
+
+Algorithm ExtractTaskRelevantSubgraph(full_scene_graph, task_info):
+
+    # 1. 提取任务相关对象名称
+    relevant_objects = Set()
+    
+    # 从 actions 中提取
+    for action in task_info.actions:
+        # 解析动作字符串，例如: "(pick_up, Mug)" 或 "(put_in, Mug, CoffeeMachine)"
+        objects = ParseActionParameters(action)
+        relevant_objects.add_all(objects)
+    
+    # 从 success_condition 中提取
+    objects = ExtractObjectNames(task_info.success_condition)
+    relevant_objects.add_all(objects)
+    
+    # 从 preactions 中提取（如果有）
+    for preaction in task_info.preactions:
+        objects = ParseActionParameters(preaction)
+        relevant_objects.add_all(objects)
+    
+    # 2. 创建子图
+    subgraph = SceneGraph()
+    
+    # 3. 查找相关节点（支持精确匹配和部分匹配）
+    for node in full_scene_graph.nodes:
+        if IsRelevant(node, relevant_objects):
+            subgraph.add_node(node)
+    
+    # 4. 添加相关边
+    for edge in full_scene_graph.edges:
+        if (edge.start in subgraph.nodes OR edge.end in subgraph.nodes):
+            # 如果边的端点至少有一个在子图中，保留该边
+            # 如果端点不在子图中，也添加端点节点（保留直接关系）
+            if edge.start not in subgraph.nodes:
+                subgraph.add_node(edge.start)
+            if edge.end not in subgraph.nodes:
+                subgraph.add_node(edge.end)
+            subgraph.add_edge(edge)
+    
+    return subgraph
+
+**匹配策略**：
+	•	精确匹配：对象名称完全匹配
+	•	部分匹配：对象名称包含关系（例如 "Mug" 匹配 "Mug-1"）
+	•	类型匹配：对象类型匹配（例如 "Mug" 匹配 objectType="Mug"）
+
+**示例**：
+	•	任务：makeCoffee
+	•	Actions: ["(pick_up, Mug)", "(put_in, Mug, CoffeeMachine)", ...]
+	•	Success condition: "a clean mug is filled with coffee"
+	•	提取对象：{Mug, CoffeeMachine, Sink, Faucet, CounterTop}
+	•	完整场景图：90个节点 → 裁剪后：~10个节点
+
+**实现位置**：
+	•	`core/scene_graph.py`：`SceneGraph.extract_task_relevant_subgraph()` 方法
+	•	使用方式：`task_relevant_sg = full_sg.extract_task_relevant_subgraph(task_info)`
+
+
+⸻
+
 #️⃣ 2. 约束生成（Constraint Generation）
 
 LLM 负责将场景图 + 任务目标转换为：
 	•	结构化 JSON 约束
 	•	每个约束包含 Pre / Post / Invariants / Goal
 	•	每个约束包含 condition_expr（可执行 DSL / AST）
+	•	**关键改进**：约束必须绑定到具体动作（Action-Level Constraints）
 
 ⸻
 
 ✔ 2.1 LLM 生成的目标格式（结构化 JSON）
+
+**改进版格式（动作级约束）**：
 
 {
   "constraints": [
     {
       "id": "C1",
       "type": "pre",
-      "description": "Machine must be open before inserting a cup",
-      "condition_expr": "(eq machine.door 'open')",
+      "action": "put_in",
+      "object": "mug",
+      "target": "coffee_machine",
+      "description": "Coffee machine must be empty before inserting mug",
+      "condition_expr": "container_empty(coffee_machine)",
       "severity": "hard",
       "eval_time": "pre"
     },
     {
       "id": "C2",
       "type": "post",
-      "description": "Cup must be inside machine after insertion",
-      "condition_expr": "(inside cup machine)",
+      "action": "put_in",
+      "object": "mug",
+      "target": "coffee_machine",
+      "description": "Mug must be inside coffee machine after insertion",
+      "condition_expr": "(inside mug coffee_machine)",
+      "severity": "hard",
+      "eval_time": "post"
+    },
+    {
+      "id": "C3",
+      "type": "post",
+      "action": "fill",
+      "object": "mug",
+      "description": "Mug must be filled with coffee after filling",
+      "condition_expr": "mug.isFilled == True",
       "severity": "hard",
       "eval_time": "post"
     }
   ]
 }
 
+**关键改进点**：
+	•	每个约束必须绑定到具体动作（action 字段）
+	•	区分容器约束和对象约束
+	•	Precondition 在动作执行前检查
+	•	Postcondition 在动作执行后检查
+	•	Goal 只在最终状态检查
+
 
 ⸻
 
-✔ 2.2 Constraint Generation 伪代码
+✔ 2.2 Constraint Generation 伪代码（改进版）
 
 Algorithm GenerateConstraints(scene_graph, task_info):
 
     scene_text = scene_graph.to_text()
+    actions = task_info.actions  # 动作列表
 
-    prompt = BuildPrompt(scene_text, task_info)
+    # 改进：要求 LLM 为每个动作生成约束
+    prompt = BuildPrompt(
+        scene_text, 
+        task_info,
+        instruction="Generate action-level constraints: pre/post for each action"
+    )
 
     llm_output = LLMQuery(prompt)
 
     constraint_list = ParseConstraintJSON(llm_output)
 
+    # 改进：将约束绑定到具体动作
+    for constraint in constraint_list:
+        constraint.bound_action = MatchConstraintToAction(constraint, actions)
+        constraint.action_index = FindActionIndex(constraint.bound_action, actions)
+
     ast_constraints = CompileConstraintsToAST(constraint_list)
 
     return ast_constraints
+
+**约束绑定策略（改进版）**：
+	•	从约束描述中提取对象名称和动作关键词
+	•	匹配动作类型（put_in, fill, place_on 等）和动作参数中的对象
+	•	使用动作关键词词典进行精确匹配
+	•	将约束绑定到最相关的动作，并记录 action, object, target 信息
+	•	确保每个约束都有明确的动作绑定，不能是"悬空的约束"
 
 
 ⸻
@@ -183,20 +315,64 @@ Algorithm MemoryUpdate(raw_state):
 	•	类型（pre/post/invariant/goal）
 	•	可执行函数（inside / eq / intersects / reachable 等）
 
-✔ ValidateConstraint（核心）
+✔ 4.1 约束编译改进（正确区分容器和对象状态）
 
-Algorithm ValidateConstraint(constraint, world_state, evaluation_time, memory):
+**关键改进**：区分 "容器是否为空" 和 "对象是否被填充"
 
-    if constraint.type == 'pre' and evaluation_time != 'pre':
-        return SKIP
+Algorithm CompileConstraint(constraint_description):
 
-    if constraint.type == 'post' and evaluation_time != 'post':
-        return SKIP
+    if IsContainerEmptyCheck(constraint_description):
+        # 容器是否为空：检查容器内是否有对象
+        # 使用场景图中的边关系
+        condition_expr = "len([e for e in scene_graph.edges.values() 
+                              if e.end.name == container_name 
+                              and e.edge_type == 'inside']) == 0"
+    
+    elif IsObjectFilledCheck(constraint_description):
+        # 对象是否被填充：检查 isFilled 属性
+        condition_expr = "node.attributes.get('isFilled', False)"
+    
+    else:
+        # 其他约束类型
+        condition_expr = ParseStandardConstraint(constraint_description)
+    
+    return condition_expr
+
+**示例**：
+	•	"coffee machine must be empty" → 检查容器内对象数量
+	•	"mug must be filled" → 检查 mug.isFilled 属性
+
+✔ 4.2 ValidateConstraint（改进版：动作级检查）
+
+Algorithm ValidateConstraint(constraint, scene_graph, action_index, events):
+
+    # 根据约束类型和绑定的动作选择正确的场景图
+    if constraint.type == 'pre':
+        # Precondition: 在动作执行前检查
+        if action_index > 0:
+            eval_scene_graph = GenerateSceneGraph(events[action_index - 1])
+            eval_scene_graph = eval_scene_graph.extract_task_relevant_subgraph(task_info)
+        else:
+            eval_scene_graph = initial_scene_graph
+        evaluation_time = f"before action {action_index + 1}"
+    
+    elif constraint.type == 'post':
+        # Postcondition: 在动作执行后检查
+        if action_index < len(events) - 1:
+            eval_scene_graph = GenerateSceneGraph(events[action_index + 1])
+            eval_scene_graph = eval_scene_graph.extract_task_relevant_subgraph(task_info)
+        else:
+            eval_scene_graph = final_scene_graph
+        evaluation_time = f"after action {action_index + 1}"
+    
+    else:  # goal
+        eval_scene_graph = final_scene_graph
+        evaluation_time = "at task completion"
 
     if constraint.condition_ast == NULL:
-        return UNCERTAIN  # 防止 LLM 错误导致漏判
+        return UNCERTAIN
 
-    (value, atom_conf) = EvalPredicate(constraint.condition_ast, world_state, memory)
+    (value, atom_conf) = EvalPredicate(constraint.condition_ast, eval_scene_graph, memory)
 
     confidence = Aggregate(atom_conf)
 
@@ -213,34 +389,101 @@ Algorithm ValidateConstraint(constraint, world_state, evaluation_time, memory):
 
 #️⃣ 5. 整体流程（Complete Failure Detection Pipeline）
 
-Algorithm CRAFT_Pipeline(video_stream, task_info):
+**改进版：动作级约束检查**
+
+Algorithm CRAFT_Pipeline(events, task_info):
 
     memory = EnvironmentMemory()
-    constraints = GenerateConstraints(initial_scene_graph, task_info)
     
-    prev_state = None
+    # 1. 生成场景图（裁剪任务相关子图）
+    initial_sg = BuildSceneGraph(events[0], task_info)
+    initial_sg = initial_sg.extract_task_relevant_subgraph(task_info)
+    
+    # 2. 生成约束（动作级）
+    constraints = GenerateConstraints(initial_sg, task_info)
+    # 约束已绑定到具体动作
+    
+    # 3. 按动作顺序执行检查
+    actions = task_info.actions
+    failures = []
+    
+    for action_idx, action in enumerate(actions):
+        
+        # 3.1 检查该动作的 Preconditions（动作执行前）
+        action_preconditions = GetConstraintsForAction(constraints, action_idx, type='pre')
+        
+        # 获取动作执行前的场景图
+        if action_idx > 0:
+            pre_scene_graph = BuildSceneGraph(events[action_idx - 1], task_info)
+            pre_scene_graph = pre_scene_graph.extract_task_relevant_subgraph(task_info)
+        else:
+            pre_scene_graph = initial_sg
+        
+        for constraint in action_preconditions:
+            status = ValidateConstraint(constraint, pre_scene_graph, action_idx, 'pre')
+            
+            if status == VIOLATED:
+                failures.append({
+                    "step": action_idx + 1,
+                    "action": action,
+                    "failure_type": "Precondition Violation",
+                    "constraint": constraint,
+                    "scene": pre_scene_graph
+                })
+                return failures  # CRAFT：立即失败
+        
+        # 3.2 执行动作（模拟或实际执行）
+        # 这里假设动作已执行，events[action_idx] 是执行后的状态
+        
+        # 3.3 检查该动作的 Postconditions（动作执行后）
+        action_postconditions = GetConstraintsForAction(constraints, action_idx, type='post')
+        
+        # 获取动作执行后的场景图
+        if action_idx < len(events) - 1:
+            post_scene_graph = BuildSceneGraph(events[action_idx + 1], task_info)
+            post_scene_graph = post_scene_graph.extract_task_relevant_subgraph(task_info)
+        else:
+            post_scene_graph = BuildSceneGraph(events[-1], task_info)
+            post_scene_graph = post_scene_graph.extract_task_relevant_subgraph(task_info)
+        
+        for constraint in action_postconditions:
+            status = ValidateConstraint(constraint, post_scene_graph, action_idx, 'post')
+            
+            if status == VIOLATED:
+                failures.append({
+                    "step": action_idx + 1,
+                    "action": action,
+                    "failure_type": "Postcondition Violation",
+                    "constraint": constraint,
+                    "scene": post_scene_graph
+                })
+                return failures
+    
+    # 4. 检查最终 Goal（任务完成时）
+    final_sg = BuildSceneGraph(events[-1], task_info)
+    final_sg = final_sg.extract_task_relevant_subgraph(task_info)
+    
+    goal_constraints = GetConstraintsForAction(constraints, None, type='goal')
+    for constraint in goal_constraints:
+        status = ValidateConstraint(constraint, final_sg, len(actions), 'goal')
+        
+        if status == VIOLATED:
+            failures.append({
+                "step": "final",
+                "action": "task_completion",
+                "failure_type": "Goal Not Achieved",
+                "constraint": constraint,
+                "scene": final_sg
+            })
+    
+    return failures if failures else SUCCESS
 
-    for frame in video_stream:
-
-        raw_state = Perception(frame)
-        world_state = memory.update(raw_state)
-
-        event = DetectCurrentEvent(world_state, action_log)
-
-        if ShouldTriggerValidation(prev_state, world_state, event):
-
-            for c in constraints.for_event(event) ∪ global_invariants:
-
-                status = ValidateConstraint(c, world_state, eval_time_for(c), memory)
-
-                Log(c.id, status)
-
-                if status == VIOLATED:
-                    return FAILURE_DETECTED(c)
-
-        prev_state = world_state
-
-    return SUCCESS
+**关键改进点（基于 improve2.md）**：
+	•	按动作顺序检查：从第一个动作开始，依次检查每个动作的 Pre/Post 约束
+	•	Precondition 失败立即停止：一旦检测到 Precondition Violation，立即返回失败，不再检查后续动作
+	•	Goal 检查条件：只有在没有 Precondition 失败的情况下，才检查 Goal
+	•	失败报告优先级：优先报告 Precondition Violation（真正的失败原因），Goal Not Achieved 只作为补充信息
+	•	约束必须绑定到动作：每个约束必须明确绑定到具体动作，不能是"悬空的约束"
 
 
 ⸻
@@ -248,13 +491,39 @@ Algorithm CRAFT_Pipeline(video_stream, task_info):
 #️⃣ 6. 核心约束类型（Constraint Types）
 
 类型	示例	说明
-Precondition	machine must be open	动作前必须满足
-Postcondition	cup inside machine	动作后必须满足
+Precondition	machine must be open	动作前必须满足（绑定到具体动作）
+Postcondition	cup inside machine	动作后必须满足（绑定到具体动作）
 Invariant	kettle cannot teleport	始终适用
 Causal Chain	fill → has_water → heat	跨动作因果依赖
 Geometry Constraint	not intersect(cup, machine.wall)	真实几何检查
 Occupancy Constraint	volume_free(machine)	容器不能被占满
 Memory Constraint	must not disappear instantly	遮挡时不应判断为消失
+
+⸻
+
+#️⃣ 6.1 失败类型分类（Failure Type Classification）
+
+**关键改进**：区分不同类型的失败，用于精确归因
+
+类型	含义	检测时机	示例
+Precondition Violation	执行动作时违反前置条件	动作执行前	容器不为空时尝试放入
+Postcondition Violation	动作执行后未达到预期状态	动作执行后	放入后对象不在容器内
+Goal Not Achieved	任务未完成	任务结束时	最终状态不满足目标
+Physical Impossibility	物理上不可能	动作执行时	对象位置冲突
+Perception Inconsistency	感知噪声导致误判	持续监控	对象状态跳变异常
+
+**失败检测输出格式**：
+
+{
+  "step": 3,
+  "action": "put_in(mug, coffee_machine)",
+  "failure_type": "Precondition Violation",
+  "violated_constraint": "C3",
+  "constraint_type": "precondition",
+  "description": "Coffee machine must be empty before inserting mug",
+  "reason": "Container contains 1 object(s)",
+  "scene_snapshot": {...}
+}
 
 
 ⸻
@@ -273,30 +542,89 @@ Memory Constraint	must not disappear instantly	遮挡时不应判断为消失
 
 #️⃣ 8. 典型示例（执行失败检测）
 
-例：柜门关闭却“放入成功”
-
-LLM summary 模糊 → “cup near cabinet” → REFLECT误判成功
-CRAFT++：
-
-Pre: cabinet.door == 'open'
-Post: inside(cup, cabinet)
-
-可执行验证输出：
-
-PreconditionViolation: cabinet not open
-
+**改进版：动作级约束检测**
 
 ⸻
 
-例：水壶没加水却加热
+例 1：咖啡机不为空时尝试放入（REFLECT 示例）
 
-Pre(fill): kettle.position == faucet
-Post(fill): has_water == True
-Pre(heat): has_water == True
+**REFLECT 描述**：
+"The robot attempted to place the mug inside the coffee machine while there was already a cup inside it."
 
-输出：
+**CRAFT++ 检测流程**：
 
-Violation: cannot heat kettle with no water
+1. 动作：put_in(mug, coffee_machine) - Step 9
+
+2. 检查 Precondition（动作执行前）：
+   - Constraint C3: coffee_machine.contains == ∅
+   - 场景图检查：len([e for e in scene_graph.edges.values() 
+                      if e.end.name == 'CoffeeMachine' 
+                      and e.edge_type == 'inside']) == 0
+   - 结果：False（容器内有 1 个对象）
+
+3. 输出：
+
+```
+Failure Detected at Step 9:
+Action: put_in(mug, coffee_machine)
+
+Violated Constraint:
+- Type: Precondition
+- Description: Coffee machine must be empty before inserting mug
+- Condition: container_empty(coffee_machine)
+
+Failure Type:
+- Precondition Violation
+
+Explanation:
+- The robot attempted to insert the mug into a non-empty container.
+- Container contains 1 object(s) (cup)
+```
+
+**关键改进**：
+	•	失败在动作执行前就被检测到（不需要等到任务结束）
+	•	失败位置唯一且确定（Step 9）
+	•	失败类型明确（Precondition Violation）
+	•	不依赖 LLM 主观判断（可执行逻辑验证）
+
+⸻
+
+例 2：水壶没加水却加热
+
+**动作链**：
+- A1: fill(pot) - Step 4
+- A2: heat(pot) - Step 8
+
+**CRAFT++ 检测流程**：
+
+1. 检查 fill 动作的 Postcondition（动作执行后）：
+   - Constraint C4: pot.isFilled == True
+   - 场景图检查：pot.attributes.get('isFilled', False)
+   - 结果：False（pot 未被填充）
+
+2. 输出：
+
+```
+Failure Detected at Step 4:
+Action: fill(pot)
+
+Violated Constraint:
+- Type: Postcondition
+- Description: Pot must be filled with water after filling
+- Condition: pot.isFilled == True
+
+Failure Type:
+- Postcondition Violation
+
+Causal Chain:
+- fill(pot) failed → pot.isFilled == False
+- Cannot proceed to heat(pot) (precondition: pot.isFilled == True)
+```
+
+**关键改进**：
+	•	检测到 fill 动作失败（Postcondition Violation）
+	•	自动阻止后续 heat 动作（因果链检查）
+	•	失败原因可追溯（fill 动作未成功）
 
 
 ⸻
