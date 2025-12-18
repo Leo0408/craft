@@ -30,10 +30,12 @@ class ConstraintGenerator:
         scene_text = scene_graph.to_text()
         task_name = task_info.get('name', '')
         goal_text = goal or task_info.get('success_condition', '')
+        actions_text = ", ".join(task_info.get('actions', []))
         
         prompt_info = self.llm_prompter.prompts['constraint-generator']
         user_prompt = prompt_info['template-user'].format(
             task=task_name,
+            actions=actions_text,
             scene_graph=scene_text,
             goal=goal_text
         )
@@ -76,20 +78,33 @@ class ConstraintGenerator:
             if 'constraints' in data:
                 for constraint in data['constraints']:
                     # Normalize constraint type
-                    constraint_type = constraint.get('type', 'precondition')
-                    if constraint_type == 'pre':
+                    raw_type = str(constraint.get('type', 'precondition')).lower()
+                    if any(kw in raw_type for kw in ['pre', 'before']):
                         constraint_type = 'precondition'
-                    elif constraint_type == 'post':
+                    elif any(kw in raw_type for kw in ['post', 'after']):
                         constraint_type = 'postcondition'
+                    else:
+                        constraint_type = 'precondition'
+                    
+                    # Ensure template is captured - check multiple potential keys
+                    template_val = (
+                        constraint.get('template') or 
+                        constraint.get('template_id') or
+                        constraint.get('condition_expr') or 
+                        constraint.get('condition') or
+                        'N/A'
+                    )
                     
                     constraints.append({
-                        'id': constraint.get('id', f'C{len(constraints)+1}'),
+                        'id': str(constraint.get('id', f'C{len(constraints)+1}')),
                         'type': constraint_type,
-                        'description': constraint.get('description', ''),
-                        'condition_expr': constraint.get('condition_expr', ''),
-                        'severity': constraint.get('severity', 'hard'),
-                        'eval_time': constraint.get('eval_time', 'now'),
-                        'condition': constraint.get('condition_expr', '')  # For backward compatibility
+                        'template': str(template_val),
+                        'action': str(constraint.get('action', '')),
+                        'description': str(constraint.get('description', '')),
+                        'condition_expr': str(constraint.get('condition_expr') or template_val),
+                        'severity': str(constraint.get('severity', 'hard')),
+                        'action_index': constraint.get('action_index'), # Preserve action_index if LLM provides it
+                        'condition': str(constraint.get('condition_expr') or template_val)
                     })
                 return constraints
         except (json.JSONDecodeError, KeyError, ValueError) as e:
@@ -142,6 +157,7 @@ class ConstraintGenerator:
             constraints.append({
                 'id': f'C{len(constraints)+1}',
                 'description': description,
+                'template': 'N/A (Text Parsed)', # Add template key to fallback
                 'condition': condition,
                 'condition_expr': condition or '',  # Use condition as condition_expr
                 'type': constraint_type,

@@ -169,101 +169,60 @@ Algorithm ExtractTaskRelevantSubgraph(full_scene_graph, task_info):
 
 ⸻
 
-#️⃣ 2. 约束生成（Constraint Generation）
+#️⃣ 2. 动作感知约束生成（Action-aware Constraint Generation）
 
-LLM 负责将场景图 + 任务目标转换为：
-	•	结构化 JSON 约束
-	•	每个约束包含 Pre / Post / Invariants / Goal
-	•	每个约束包含 condition_expr（可执行 DSL / AST）
-	•	**关键改进**：约束必须绑定到具体动作（Action-Level Constraints）
+### 2.1 核心思想（Action-centric vs. Goal-centric）
+传统的约束生成往往仅从任务的“最终目标”出发（Goal-centric），这导致验证过程集中在状态校验上，容易遗漏中间动作的因果要求。CRAFT++ 采用**动作感知约束生成（Action-aware Constraint Generation）**，将验证重心从“目标层”下移至“动作层”。
 
-⸻
+**核心断言**：因果失败发生在动作层，而不是目标层。只要约束生成不以动作序列为中心，就必然遗漏关键因果条件。
 
-✔ 2.1 LLM 生成的目标格式（结构化 JSON）
+### 2.2 动作语义模板库（Action Semantic Templates）
+系统预定义了一组物理常识模板，规定了每个动作的必要前置条件（Preconditions）和预期后置条件（Postconditions）。
 
-**改进版格式（动作级约束）**：
+| 动作 (Action) | 前置条件 (Preconditions) | 后置条件 (Postconditions) |
+| :--- | :--- | :--- |
+| `pick_up(X)` | `reachable(X)`, `gripper_empty` | `holding(X)` |
+| `put_on(X, Y)` | `holding(X)` | `is_on(X, Y)` |
+| `put_in(X, Y)` | `holding(X)`, `container_open(Y)`, `container_empty(Y)` | `inside(X, Y)` |
+| `toggle_on(Y)` | `reachable(Y)` | `toggled(Y) == True` |
+| `toggle_off(Y)`| `toggled(Y) == True` | `toggled(Y) == False` |
 
-{
-  "constraints": [
-    {
-      "id": "C1",
-      "type": "pre",
-      "action": "put_in",
-      "object": "mug",
-      "target": "coffee_machine",
-      "description": "Coffee machine must be empty before inserting mug",
-      "condition_expr": "container_empty(coffee_machine)",
-      "severity": "hard",
-      "eval_time": "pre"
-    },
-    {
-      "id": "C2",
-      "type": "post",
-      "action": "put_in",
-      "object": "mug",
-      "target": "coffee_machine",
-      "description": "Mug must be inside coffee machine after insertion",
-      "condition_expr": "(inside mug coffee_machine)",
-      "severity": "hard",
-      "eval_time": "post"
-    },
-    {
-      "id": "C3",
-      "type": "post",
-      "action": "fill",
-      "object": "mug",
-      "description": "Mug must be filled with coffee after filling",
-      "condition_expr": "mug.isFilled == True",
-      "severity": "hard",
-      "eval_time": "post"
-    }
-  ]
-}
+### 2.3 主算法：GenerateActionAwareConstraints
+该算法遍历机器人的动作序列，为每一个动作实例化对应的物理约束。
 
-**关键改进点**：
-	•	每个约束必须绑定到具体动作（action 字段）
-	•	区分容器约束和对象约束
-	•	Precondition 在动作执行前检查
-	•	Postcondition 在动作执行后检查
-	•	Goal 只在最终状态检查
+```python
+Algorithm GenerateActionAwareConstraints:
+Input: scene_graph, action_sequence
+Output: action_bound_constraints
 
+BEGIN
+    constraints = []
+    FOR each action IN action_sequence:
+        # 1. 查找动作模板
+        template = ACTION_TEMPLATE_LIBRARY.get(action.name)
+        
+        # 2. 生成前置条件 (Preconditions)
+        FOR each pre_template IN template["pre"]:
+            constraints.append(Instantiate(pre_template, action, type='PRE'))
+            
+        # 3. 生成后置条件 (Postconditions)
+        FOR each post_template IN template["post"]:
+            constraints.append(Instantiate(post_item, action, type='POST'))
+            
+    RETURN constraints
+END
+```
 
-⸻
+### 2.4 约束实例化与编译（模板 → 可执行代码）
+生成的结构化约束被直接映射为可执行的判定函数（Executable Predicates），避免了自然语言解析的不确定性。
 
-✔ 2.2 Constraint Generation 伪代码（改进版）
+*   **`holding(X)`**：`sg.robot_state["holding"] == X` (或 `node.attributes["isPickedUp"]`)
+*   **`container_empty(Y)`**：`len([e for e in sg.edges.values() if e.end.name == Y and e.edge_type == 'inside']) == 0`
+*   **`is_on(X, Y)`**：`sg.has_edge(X, Y, 'on_top_of')`
+*   **`inside(X, Y)`**：`sg.has_edge(X, Y, 'inside')`
 
-Algorithm GenerateConstraints(scene_graph, task_info):
-
-    scene_text = scene_graph.to_text()
-    actions = task_info.actions  # 动作列表
-
-    # 改进：要求 LLM 为每个动作生成约束
-    prompt = BuildPrompt(
-        scene_text, 
-        task_info,
-        instruction="Generate action-level constraints: pre/post for each action"
-    )
-
-    llm_output = LLMQuery(prompt)
-
-    constraint_list = ParseConstraintJSON(llm_output)
-
-    # 改进：将约束绑定到具体动作
-    for constraint in constraint_list:
-        constraint.bound_action = MatchConstraintToAction(constraint, actions)
-        constraint.action_index = FindActionIndex(constraint.bound_action, actions)
-
-    ast_constraints = CompileConstraintsToAST(constraint_list)
-
-    return ast_constraints
-
-**约束绑定策略（改进版）**：
-	•	从约束描述中提取对象名称和动作关键词
-	•	匹配动作类型（put_in, fill, place_on 等）和动作参数中的对象
-	•	使用动作关键词词典进行精确匹配
-	•	将约束绑定到最相关的动作，并记录 action, object, target 信息
-	•	确保每个约束都有明确的动作绑定，不能是"悬空的约束"
-
+### 2.5 优势总结
+该设计将失败检测从“目标状态一致性检查”升级为“**动作因果一致性验证**”，使系统能够在物理上不可能的动作发生时即时定位失败原因，实现与物理仿真环境对齐的精确归因。
 
 ⸻
 

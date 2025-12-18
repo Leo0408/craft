@@ -37,53 +37,55 @@ class LLMPrompter:
                 'template-user': 'Task: {task}\nPlan: {plan}\nFinal State: {final_state}\nExpected Goal: {goal}\nWhat went wrong in the plan?'
             },
             'constraint-generator': {
-                'template-system': 'You are a constraint generator for robot tasks. Generate structured logical constraints in JSON format with executable AST expressions.',
+                'template-system': 'You are a robot task analyzer. Generate structured logical constraints by instantiating predefined templates for EVERY action in the sequence.',
                 'template-user': '''Task: {task}
+Action Sequence: {actions}
 Scene Graph: {scene_graph}
 Task Goal: {goal}
 
-Generate logical constraints in the following JSON format:
+You must generate a COMPREHENSIVE set of constraints covering the ENTIRE execution flow by instantiating the following ACTION SEMANTIC TEMPLATES for each action:
+
+1. pick_up(X):
+   - Pre: reachable(X), gripper_empty
+   - Post: holding(X)
+2. put_on(X, Y):
+   - Pre: holding(X)
+   - Post: is_on(X, Y)
+3. put_in(X, Y):
+   - Pre: holding(X), container_open(Y), container_empty(Y)
+   - Post: inside(X, Y)
+4. toggle_on(Y):
+   - Pre: reachable(Y), holding(X)
+   - Post: toggled(Y)
+5. toggle_off(Y):
+   - Pre: toggled(Y)
+   - Post: not toggled(Y)
+
+Rules:
+- For EACH physical manipulation in the Action Sequence, you MUST instantiate the corresponding Pre and Post templates.
+- **Holding Rule (CRITICAL)**: For every "put_on", "put_in", or "toggle" action, you MUST explicitly include a "holding(X)" precondition with the EXACT description "Robot must be holding the X".
+- Replace X and Y with the SPECIFIC object names from the action or scene graph (e.g., Pot, StoveBurner-4).
+- Identify Preconditions (type: "pre") and Postconditions (type: "post").
+
+Example for `boilWater` (Step 8: put_on(Pot, StoveBurner-4)):
+- Constraint: {"template": "holding(Pot)", "type": "pre", "action": "put_on(Pot, StoveBurner-4)", "description": "Robot must be holding the pot"}
+
+Output the constraints in this JSON format:
 {{
   "constraints": [
     {{
       "id": "C1",
-      "type": "pre",  // "pre" (precondition), "post" (postcondition), "invariant", or "goal"
-      "description": "Machine must be open before inserting a cup",
-      "condition_expr": "(eq machine.door 'open')",  // Executable AST/DSL expression in LISP format
-      "severity": "hard",  // "hard" or "soft"
-      "eval_time": "pre"  // "pre" (before action), "post" (after action), "now" (current state), or "final" (task completion)
-    }}
+      "template": "holding(Pot)",
+      "type": "pre",
+      "action": "put_on(Pot, StoveBurner-4)",
+      "description": "Robot must be holding the pot",
+      "severity": "hard"
+    }},
+    ...
   ]
 }}
 
-AST Expression Format:
-- Location: (inside obj container), (on_top_of obj surface)
-- State: (eq obj.state 'open'), (eq obj.state 'closed'), (eq obj.state 'empty')
-- Combined: (and (inside mug sink) (not (inside mug coffee_machine)))
-- Negation: (not (inside obj container))
-
-Generate constraints covering:
-1. Preconditions (must be satisfied before actions)
-   - For put_in actions: container must be empty (e.g., "Coffee machine must be empty before inserting mug")
-   - For put_on actions: surface must be clear
-   - For toggle actions: object must be accessible
-2. Postconditions (must be satisfied after actions)
-3. Invariants (must always be satisfied)
-4. Goal constraints (final success conditions)
-5. Causal chains (e.g., fill → has_water → heat)
-6. **Occupancy constraints** (containers must be empty before insertion)
-
-Example occupancy constraint for put_in:
-{{
-  "id": "C8",
-  "type": "pre",
-  "description": "Coffee machine must be empty before inserting mug",
-  "condition_expr": "(empty coffee_machine)",
-  "severity": "hard",
-  "eval_time": "pre"
-}}
-
-Return ONLY valid JSON, no additional text.'''
+Return ONLY valid JSON.'''
             },
             'causal-verifier': {
                 'template-system': 'You are a causal logic verifier. Verify if the causal relationships in a scene graph are logically consistent.',
