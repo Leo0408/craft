@@ -5,6 +5,19 @@ Wraps REFLECT's MDETR detector for use in CRAFT framework
 
 import os
 import sys
+
+# Configure Hugging Face mirror for faster downloads (especially in China)
+# This must be set BEFORE importing transformers
+# Set multiple environment variables for better compatibility
+if 'HF_ENDPOINT' not in os.environ:
+    os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+if 'HF_HUB_DOWNLOAD_TIMEOUT' not in os.environ:
+    os.environ['HF_HUB_DOWNLOAD_TIMEOUT'] = '300'  # 5 minutes
+# Also set for huggingface_hub if it uses different env var
+if 'HUGGINGFACE_HUB_CACHE' not in os.environ:
+    # Use mirror endpoint
+    pass
+
 import torch
 import torchvision.transforms as T
 import torch.nn.functional as F
@@ -15,11 +28,21 @@ from collections import defaultdict
 import cv2
 
 # Add REFLECT real-world directory to path if available
+# Priority: real-world > mdetr (real-world is adapted for REFLECT tasks)
 REFLECT_ROOT = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'reflect')
 if os.path.exists(REFLECT_ROOT):
+    # Try real-world first (REFLECT's adapted version)
     real_world_path = os.path.join(REFLECT_ROOT, 'real-world')
-    if os.path.exists(real_world_path) and real_world_path not in sys.path:
-        sys.path.insert(0, real_world_path)
+    mdetr_path = os.path.join(REFLECT_ROOT, 'mdetr')
+    
+    if os.path.exists(real_world_path):
+        if real_world_path not in sys.path:
+            sys.path.insert(0, real_world_path)
+        print(f"✓ Using REFLECT real-world MDETR path: {real_world_path}")
+    elif os.path.exists(mdetr_path):
+        if mdetr_path not in sys.path:
+            sys.path.insert(0, mdetr_path)
+        print(f"✓ Using original MDETR path: {mdetr_path}")
 
 
 class MDETRDetector:
@@ -45,21 +68,116 @@ class MDETRDetector:
         self._load_model(pretrained)
     
     def _load_model(self, pretrained: bool):
-        """Load MDETR model"""
-        try:
-            # Try to import from REFLECT
-            from hubconf import mdetr_efficientnetB3_phrasecut
-            self.model = mdetr_efficientnetB3_phrasecut(pretrained=pretrained).to(self.device)
-            self.model.eval()
-            torch.set_grad_enabled(False)
-            print(f"✓ MDETR detector loaded on {self.device}")
-        except ImportError:
-            print("⚠️  Warning: Could not import MDETR from REFLECT")
-            print("   Please ensure REFLECT real-world directory is accessible")
+        """Load MDETR model - tries both real-world and mdetr directories"""
+        # Try multiple paths: real-world first (REFLECT adapted), then mdetr (original)
+        # Calculate REFLECT_ROOT from current file location
+        current_file = os.path.abspath(__file__)
+        # From /home/leo/craft/perception/mdetr_detector.py
+        # Go up 3 levels: perception -> craft -> parent -> reflect
+        craft_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
+        reflect_root_calculated = os.path.join(craft_root, 'reflect')
+        reflect_root_calculated = os.path.abspath(reflect_root_calculated)  # Resolve any .. in path
+        
+        # Also try common locations
+        reflect_roots_to_try = [
+            reflect_root_calculated,
+            os.path.join(os.path.expanduser('~'), 'reflect'),
+            '/home/leo/reflect',  # Explicit path as fallback
+        ]
+        
+        # Find the first existing REFLECT root
+        REFLECT_ROOT = None
+        for root in reflect_roots_to_try:
+            root_abs = os.path.abspath(root)
+            if os.path.exists(root_abs):
+                REFLECT_ROOT = root_abs
+                break
+        
+        if REFLECT_ROOT is None:
+            print(f"⚠️  Could not find REFLECT root directory")
+            print(f"   Tried: {[os.path.abspath(r) for r in reflect_roots_to_try]}")
             self.model = None
-        except Exception as e:
-            print(f"⚠️  Error loading MDETR: {e}")
-            self.model = None
+            return
+        
+        paths_to_try = [
+            os.path.join(REFLECT_ROOT, 'real-world'),  # Preferred: REFLECT's adapted version
+            os.path.join(REFLECT_ROOT, 'mdetr')        # Fallback: original MDETR
+        ]
+        paths_to_try = [os.path.abspath(p) for p in paths_to_try]  # Resolve paths
+        
+        last_error = None
+        for path in paths_to_try:
+            if not os.path.exists(path):
+                continue
+            
+            try:
+                # Add to path if not already there
+                if path not in sys.path:
+                    sys.path.insert(0, path)
+                
+                # Ensure Hugging Face mirror is set before importing hubconf
+                # This is critical because hubconf imports models that load tokenizers
+                os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+                os.environ['HF_HUB_DOWNLOAD_TIMEOUT'] = '300'
+                
+                # Force set huggingface_hub endpoint using API (more reliable than env vars)
+                try:
+                    import huggingface_hub
+                    # Try multiple methods to set endpoint
+                    if hasattr(huggingface_hub, 'set_endpoint'):
+                        huggingface_hub.set_endpoint('https://hf-mirror.com')
+                    elif hasattr(huggingface_hub, 'constants'):
+                        # Some versions store endpoint in constants
+                        huggingface_hub.constants.ENDPOINT = 'https://hf-mirror.com'
+                    # Also try to patch file_utils if transformers uses it
+                    try:
+                        import transformers
+                        if hasattr(transformers, 'file_utils'):
+                            transformers.file_utils.HUGGINGFACE_CO_URL_HOME = 'https://hf-mirror.com'
+                    except:
+                        pass
+                except Exception as e:
+                    print(f"⚠️  Could not set huggingface_hub endpoint via API: {e}")
+                    print("   Relying on environment variables only")
+                
+                # Try to import from this path
+                from hubconf import mdetr_efficientnetB3_phrasecut
+                self.model = mdetr_efficientnetB3_phrasecut(pretrained=pretrained).to(self.device)
+                self.model.eval()
+                torch.set_grad_enabled(False)
+                print(f"✓ MDETR detector loaded from {os.path.basename(path)} on {self.device}")
+                return  # Success!
+            except ImportError as e:
+                last_error = e
+                # Remove from path if import failed
+                if path in sys.path:
+                    sys.path.remove(path)
+                continue
+            except Exception as e:
+                last_error = e
+                print(f"⚠️  Error loading MDETR from {path}: {e}")
+                continue
+        
+        # If we get here, all paths failed
+        print("⚠️  Warning: Could not import MDETR from any REFLECT path")
+        print(f"   REFLECT_ROOT: {REFLECT_ROOT}")
+        if last_error:
+            print(f"   Last error: {last_error}")
+        print("   Possible reasons:")
+        print("   1. REFLECT real-world or mdetr directory not found")
+        print("   2. Missing dependencies (timm, transformers)")
+        print("   3. hubconf.py not found or cannot be imported")
+        print("   Tried paths:")
+        for path in paths_to_try:
+            exists = "✅" if os.path.exists(path) else "❌"
+            hubconf_path = os.path.join(path, "hubconf.py")
+            hubconf_exists = "✅" if os.path.exists(hubconf_path) else "❌"
+            print(f"     {exists} {path}")
+            print(f"        hubconf.py: {hubconf_exists}")
+        if last_error:
+            import traceback
+            traceback.print_exc()
+        self.model = None
     
     def _rescale_bboxes(self, out_bbox, size):
         """Rescale bounding boxes from normalized to image coordinates"""

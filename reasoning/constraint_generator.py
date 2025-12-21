@@ -1,11 +1,184 @@
 """
 Constraint Generator Module
 Generates logical constraints from scene graphs and task requirements
+
+Supports two modes:
+1. LLM-based generation (original method)
+2. Template-based generation (improve3.md scheme) - deterministic, no eval
 """
 
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Callable, Any
 from ..core.scene_graph import SceneGraph
 from .llm_prompter import LLMPrompter
+
+
+# ============================================================================
+# Template-based Constraint Generation (improve3.md scheme)
+# ============================================================================
+
+# Action Semantic Templates - 动作语义模板库
+ACTION_TEMPLATES = {
+    "pick_up": {
+        "pre": [
+            ("gripper_empty", ["robot"]),
+            ("reachable", ["X"])
+        ],
+        "post": [
+            ("holding", ["X"])
+        ]
+    },
+    "put_in": {
+        "pre": [
+            ("holding", ["X"]),
+            ("container_open", ["Y"]),
+            ("container_empty", ["Y"])
+        ],
+        "post": [
+            ("inside", ["X", "Y"])
+        ]
+    },
+    "put_on": {
+        "pre": [
+            ("holding", ["X"])
+        ],
+        "post": [
+            ("on_top_of", ["X", "Y"])
+        ]
+    },
+    "toggle_on": {
+        "pre": [
+            ("reachable", ["Y"])
+        ],
+        "post": [
+            ("toggled_on", ["Y"])
+        ]
+    },
+    "toggle_off": {
+        "pre": [
+            ("reachable", ["Y"])
+        ],
+        "post": [
+            ("toggled_off", ["Y"])
+        ]
+    },
+    "navigate_to_obj": {
+        "pre": [],
+        "post": []
+    },
+    "pour": {
+        "pre": [
+            ("holding", ["X"])
+        ],
+        "post": [
+            ("filled", ["Y"])
+        ]
+    }
+}
+
+
+# Predicate Implementation - Predicate → 可执行函数映射
+def predicate_holding(sg: SceneGraph, X: str) -> bool:
+    """Check if robot is holding object X"""
+    # Check if there's a holding edge from Robot to X
+    robot_node = sg.get_node("Robot")
+    if not robot_node:
+        return False
+    # Check for holding edge or isPickedUp attribute
+    for node in sg.nodes:
+        if node.name == X and node.attributes.get('isPickedUp', False):
+            return True
+    # Check for holding edge
+    edge_key = (robot_node.name, X)
+    if edge_key in sg.edges:
+        return sg.edges[edge_key].edge_type == "holding"
+    return False
+
+
+def predicate_inside(sg: SceneGraph, X: str, Y: str) -> bool:
+    """Check if X is inside Y"""
+    edge_key = (X, Y)
+    if edge_key in sg.edges:
+        return sg.edges[edge_key].edge_type == "inside"
+    return False
+
+
+def predicate_container_empty(sg: SceneGraph, Y: str) -> bool:
+    """Check if container Y is empty (no objects inside)"""
+    items_inside = []
+    for (start_name, end_name), edge in sg.edges.items():
+        if edge.end.name == Y and edge.edge_type == "inside":
+            items_inside.append(edge.start.name)
+    return len(items_inside) == 0
+
+
+def predicate_container_open(sg: SceneGraph, Y: str) -> bool:
+    """Check if container Y is open"""
+    node = sg.get_node(Y)
+    if not node:
+        return False
+    return node.attributes.get("isOpen", False)
+
+
+def predicate_gripper_empty(sg: SceneGraph, _: str = None) -> bool:
+    """Check if gripper is empty (not holding anything)"""
+    # Check if any node has isPickedUp=True
+    for node in sg.nodes:
+        if node.attributes.get('isPickedUp', False):
+            return False
+    return True
+
+
+def predicate_on_top_of(sg: SceneGraph, X: str, Y: str) -> bool:
+    """Check if X is on top of Y"""
+    edge_key = (X, Y)
+    if edge_key in sg.edges:
+        edge_type = sg.edges[edge_key].edge_type.lower()
+        return edge_type in ["on_top_of", "on", "on top of", "ontopof"]
+    return False
+
+
+def predicate_reachable(sg: SceneGraph, X: str) -> bool:
+    """Check if X is reachable (simplified: object exists)"""
+    return sg.get_node(X) is not None
+
+
+def predicate_toggled_on(sg: SceneGraph, Y: str) -> bool:
+    """Check if Y is toggled on"""
+    node = sg.get_node(Y)
+    if not node:
+        return False
+    return node.attributes.get("isToggled", False)
+
+
+def predicate_toggled_off(sg: SceneGraph, Y: str) -> bool:
+    """Check if Y is toggled off"""
+    node = sg.get_node(Y)
+    if not node:
+        return True  # If not found, assume off
+    return not node.attributes.get("isToggled", False)
+
+
+def predicate_filled(sg: SceneGraph, Y: str) -> bool:
+    """Check if Y is filled"""
+    node = sg.get_node(Y)
+    if not node:
+        return False
+    return node.attributes.get("isFilled", False)
+
+
+# Predicate implementation mapping
+PREDICATE_IMPL = {
+    "holding": predicate_holding,
+    "inside": predicate_inside,
+    "container_empty": predicate_container_empty,
+    "container_open": predicate_container_open,
+    "gripper_empty": predicate_gripper_empty,
+    "on_top_of": predicate_on_top_of,
+    "reachable": predicate_reachable,
+    "toggled_on": predicate_toggled_on,
+    "toggled_off": predicate_toggled_off,
+    "filled": predicate_filled,
+}
 
 
 class ConstraintGenerator:
@@ -593,4 +766,200 @@ class ConstraintGenerator:
         
         # If we can't compile, return None (will be skipped)
         return None
+    
+    # ========================================================================
+    # Template-based Constraint Generation Methods (improve3.md scheme)
+    # ========================================================================
+    
+    def parse_action_string(self, action_str: str) -> Tuple[str, List[str]]:
+        """
+        Parse action string to (action_name, args)
+        Example: "(put_in, Mug, CoffeeMachine)" -> ("put_in", ["Mug", "CoffeeMachine"])
+        """
+        action_str = action_str.strip()
+        if action_str.startswith("(") and action_str.endswith(")"):
+            action_str = action_str[1:-1]
+        parts = [p.strip() for p in action_str.split(",")]
+        return parts[0], parts[1:] if len(parts) > 1 else []
+    
+    def parse_actions(self, action_strings: List[str]) -> List[Dict]:
+        """
+        Parse action strings to action dictionaries
+        
+        Args:
+            action_strings: List of action strings like ["(pick_up, Mug)", ...]
+        
+        Returns:
+            List of action dicts with 'step_idx', 'name', 'args'
+        """
+        actions = []
+        for idx, action_str in enumerate(action_strings):
+            name, args = self.parse_action_string(action_str)
+            actions.append({
+                'step_idx': idx,
+                'name': name,
+                'args': args,
+                'original': action_str
+            })
+        return actions
+    
+    def bind_args(self, template_args: List[str], action_args: List[str]) -> List[str]:
+        """
+        Bind template arguments to actual action arguments
+        Example: ["X", "Y"] + ["Mug", "CoffeeMachine"] -> ["Mug", "CoffeeMachine"]
+        """
+        mapping = {}
+        for i, arg in enumerate(template_args):
+            if arg == "robot":
+                mapping[arg] = "robot"
+            else:
+                mapping[arg] = action_args[i] if i < len(action_args) else None
+        return [mapping.get(arg) for arg in template_args if mapping.get(arg) is not None]
+    
+    def instantiate_action_constraints(self, action: Dict) -> List[Dict]:
+        """
+        Instantiate constraints for a single action using templates
+        
+        Args:
+            action: Action dict with 'step_idx', 'name', 'args'
+        
+        Returns:
+            List of constraint dictionaries
+        """
+        action_name = action['name']
+        template = ACTION_TEMPLATES.get(action_name)
+        if template is None:
+            return []
+        
+        constraints = []
+        action_idx = action['step_idx']
+        action_args = action['args']
+        
+        # Generate Preconditions
+        for pred, t_args in template.get("pre", []):
+            args = self.bind_args(t_args, action_args)
+            if None in args:
+                continue  # Skip if binding failed
+            
+            # Build description
+            if pred == "gripper_empty":
+                description = f"Robot gripper must be empty before {action_name}"
+            elif pred == "holding":
+                description = f"Robot must be holding {args[0]} before {action_name}"
+            elif pred == "reachable":
+                description = f"{args[0]} must be reachable before {action_name}"
+            elif pred == "container_open":
+                description = f"{args[0]} must be open before {action_name}"
+            elif pred == "container_empty":
+                description = f"{args[0]} must be empty before {action_name}"
+            else:
+                description = f"{pred}{tuple(args)} must hold before {action_name}"
+            
+            constraints.append({
+                'id': f'C{len(constraints)+1}',
+                'type': 'precondition',
+                'predicate': pred,
+                'args': args,
+                'step': action_idx,
+                'action': action,
+                'description': description,
+                'template': f"{pred}({', '.join(args)})"
+            })
+        
+        # Generate Postconditions
+        for pred, t_args in template.get("post", []):
+            args = self.bind_args(t_args, action_args)
+            if None in args:
+                continue
+            
+            # Build description
+            if pred == "holding":
+                description = f"Robot must be holding {args[0]} after {action_name}"
+            elif pred == "inside":
+                description = f"{args[0]} must be inside {args[1]} after {action_name}"
+            elif pred == "on_top_of":
+                description = f"{args[0]} must be on top of {args[1]} after {action_name}"
+            elif pred == "toggled_on":
+                description = f"{args[0]} must be toggled on after {action_name}"
+            elif pred == "toggled_off":
+                description = f"{args[0]} must be toggled off after {action_name}"
+            elif pred == "filled":
+                description = f"{args[0]} must be filled after {action_name}"
+            else:
+                description = f"{pred}{tuple(args)} must hold after {action_name}"
+            
+            constraints.append({
+                'id': f'C{len(constraints)+1}',
+                'type': 'postcondition',
+                'predicate': pred,
+                'args': args,
+                'step': action_idx,
+                'action': action,
+                'description': description,
+                'template': f"{pred}({', '.join(args)})"
+            })
+        
+        return constraints
+    
+    def compile_constraint_template(self, constraint: Dict) -> Dict:
+        """
+        Compile template-based constraint to executable form
+        
+        Args:
+            constraint: Constraint dict with 'predicate', 'args'
+        
+        Returns:
+            Constraint dict with 'executable' function added
+        """
+        predicate = constraint.get('predicate')
+        args = constraint.get('args', [])
+        
+        pred_fn = PREDICATE_IMPL.get(predicate)
+        if pred_fn is None:
+            raise ValueError(f"Unknown predicate: {predicate}")
+        
+        def executable(scene_graph: SceneGraph) -> bool:
+            """Executable constraint function"""
+            return pred_fn(scene_graph, *args)
+        
+        constraint['executable'] = executable
+        constraint['condition_expr'] = f"{predicate}({', '.join(args)})"
+        return constraint
+    
+    def generate_constraints_from_templates(
+        self, 
+        action_strings: List[str],
+        compile_constraints: bool = True
+    ) -> List[Dict]:
+        """
+        Generate constraints from action sequence using templates (improve3.md scheme)
+        
+        Args:
+            action_strings: List of action strings like ["(pick_up, Mug)", ...]
+            compile_constraints: Whether to compile constraints to executable form
+        
+        Returns:
+            List of compiled constraint dictionaries
+        """
+        # Parse actions
+        actions = self.parse_actions(action_strings)
+        
+        # Instantiate constraints for each action
+        constraints = []
+        for action in actions:
+            action_constraints = self.instantiate_action_constraints(action)
+            constraints.extend(action_constraints)
+        
+        # Compile constraints to executable form
+        if compile_constraints:
+            compiled = []
+            for constraint in constraints:
+                try:
+                    compiled_constraint = self.compile_constraint_template(constraint)
+                    compiled.append(compiled_constraint)
+                except Exception as e:
+                    print(f"⚠️  Failed to compile constraint {constraint.get('id')}: {e}")
+            return compiled
+        
+        return constraints
 

@@ -90,6 +90,118 @@ Algorithm BuildSceneGraph(detections, spatial_relations, task_info):
 
 ⸻
 
+#️⃣ 1.5 真实环境场景图构建（Real-World Scene Graph Construction）
+
+**核心思想**：CRAFT is **perception-agnostic** and can be directly integrated with open-vocabulary perception models (CLIP/Detic/DINO/SAM) in real-world environments.
+
+## 1.5.1 多模态感知层（Multi-Modal Perception Layer）
+
+真实环境中，CRAFT 使用开放词表检测器作为前端感知层：
+
+**推荐组合**（真实环境常见做法）：
+
+| 模块 | 推荐模型 | 作用 |
+|------|---------|------|
+| 物体检测 | Grounding-DINO / Detic | 开放词表物体识别（不用预定义类别） |
+| 语义对齐 | CLIP | 属性识别（mug / cup / coffee machine） |
+| 分割 | SAM / SAM2 | 像素级掩码生成 |
+| 跟踪 | SORT / ByteTrack | 多目标跟踪 |
+| 深度 | RGB-D 或单目估计 | 3D 位置估计 |
+
+**输入**：RGB-D Stream 或 RGB Stream
+
+**输出**：带置信度的检测结果
+
+```python
+Detection = {
+    "label": "Mug",
+    "bbox": [x1, y1, x2, y2],
+    "confidence": 0.83,
+    "mask": ...,
+    "depth": ...,
+    "position_3d": (x, y, z)
+}
+```
+
+## 1.5.2 真实环境场景图节点（Real-World Scene Graph Node）
+
+真实环境中的节点包含感知相关和时间相关信息：
+
+```python
+class Node:
+    def __init__(self, name, obj_type):
+        self.name = name
+        self.object_type = obj_type
+        
+        # 感知相关（带置信度）
+        self.bbox = None
+        self.mask = None
+        self.confidence = 0.0  # 检测置信度
+        self.position_3d = None  # 3D 位置
+        
+        # 状态属性（CRAFT关心的）
+        self.attributes = {
+            "isPickedUp": False,
+            "isOpen": None,
+            "isFilled": None,
+            "isToggled": None
+        }
+        
+        # 时间信息（关键）
+        self.last_seen_ts = None
+        self.velocity = None  # 用于预测遮挡位置
+```
+
+## 1.5.3 关系边的构建（带置信度）
+
+真实环境里，关系一定是"软"的（带置信度）：
+
+```python
+def infer_relations(nodes):
+    edges = []
+    for a in nodes:
+        for b in nodes:
+            if a == b: continue
+            
+            # 基于几何关系推断，带置信度
+            if bbox_inside(a.bbox, b.bbox):
+                confidence = compute_inside_confidence(a, b)
+                edges.append(Edge(a, b, "inside", confidence=confidence))
+            
+            if on_top_of(a, b):
+                confidence = compute_on_top_confidence(a, b)
+                edges.append(Edge(a, b, "on_top_of", confidence=confidence))
+    return edges
+```
+
+**关键点**：
+- 真实环境的关系推断基于几何（bbox, 3D position），不是 ground truth
+- 每个关系都有置信度分数
+- 这正是为什么需要 Environment Memory 来稳定关系
+
+## 1.5.4 真实环境完整流程
+
+```
+RGB-D Stream
+    ↓
+Open-vocab Detection (MDETR/CLIP/Detic)
+    ↓
+Multi-object Tracking
+    ↓
+Scene Graph Construction (with confidence)
+    ↓
+Environment Memory (temporal smoothing, occlusion handling)
+    ↓
+Smoothed Scene Graph (for constraint validation)
+```
+
+**与仿真环境的区别**：
+- 仿真：Scene Graph 直接来自 ground truth
+- 真实：Scene Graph 经过感知 → 记忆平滑 → 置信度处理
+
+
+⸻
+
 #️⃣ 1.1 场景图裁剪（Task-Relevant Subgraph Extraction）
 
 **核心思想**：从完整场景图中裁剪出"与当前子任务相关的最小子图"，减少复杂度，提高约束生成和验证的效率。
@@ -214,54 +326,166 @@ END
 ```
 
 ### 2.4 约束实例化与编译（模板 → 可执行代码）
+
+CRAFT++ 支持两种约束生成方式：
+
+#### 方式 1：LLM-based 约束生成（可选）
+使用 LLM 生成约束描述，然后解析和编译为可执行代码。
+
+#### 方式 2：模板化约束生成（推荐，improve3.md 方案）✅
+
+**核心特点**：
+- ✅ **不依赖 LLM**：直接从动作序列和预定义模板生成约束
+- ✅ **不依赖 eval**：使用可执行函数，避免字符串拼接和 eval 的安全风险
+- ✅ **确定性**：相同输入总是产生相同输出，完全可复现
+- ✅ **直接编译**：约束生成时直接编译为可执行函数（`executable: Callable`）
+
+**实现原理**：
+
 生成的结构化约束被直接映射为可执行的判定函数（Executable Predicates），避免了自然语言解析的不确定性。
 
-*   **`holding(X)`**：`sg.robot_state["holding"] == X` (或 `node.attributes["isPickedUp"]`)
-*   **`container_empty(Y)`**：`len([e for e in sg.edges.values() if e.end.name == Y and e.edge_type == 'inside']) == 0`
-*   **`is_on(X, Y)`**：`sg.has_edge(X, Y, 'on_top_of')`
-*   **`inside(X, Y)`**：`sg.has_edge(X, Y, 'inside')`
+**Predicate 实现映射**（PREDICATE_IMPL）：
 
-### 2.5 优势总结
+*   **`holding(X)`**：检查场景图中是否有 holding 边，或节点的 `isPickedUp` 属性为 True
+*   **`container_empty(Y)`**：检查容器 Y 内是否有对象（通过检查 `inside` 类型的边）
+*   **`container_open(Y)`**：检查容器的 `isOpen` 属性
+*   **`gripper_empty`**：检查是否没有任何节点被标记为 `isPickedUp`
+*   **`on_top_of(X, Y)`**：检查场景图中是否存在 `on_top_of` 类型的边
+*   **`inside(X, Y)`**：检查场景图中是否存在 `inside` 类型的边
+*   **`reachable(X)`**：检查对象 X 是否存在于场景图中
+*   **`toggled_on(Y)`** / **`toggled_off(Y)`**：检查设备的 `isToggled` 属性
+*   **`filled(Y)`**：检查对象的 `isFilled` 属性
+
+**约束生成流程**：
+
+```
+Action Sequence → Parse Actions → Instantiate Templates → Compile to Executable Functions
+```
+
+每个约束包含：
+- `predicate`: 谓词名称（如 "holding", "inside"）
+- `args`: 参数列表（如 ["Mug"] 或 ["Mug", "CoffeeMachine"]）
+- `executable`: 可执行函数 `Callable[[SceneGraph], bool]`
+- `step`: 绑定的动作索引
+- `type`: 约束类型（PRE / POST）
+
+### 2.5 模板化方法 vs. LLM 方法对比
+
+| 特性 | 模板化方法（推荐） | LLM 方法 |
+| :--- | :--- | :--- |
+| **确定性** | ✅ 完全确定，可复现 | ❌ 依赖 LLM 输出，可能不一致 |
+| **性能** | ✅ 快速，无需 API 调用 | ⚠️ 需要 LLM API 调用 |
+| **可扩展性** | ✅ 易于添加新动作模板 | ⚠️ 需要更新 Prompt |
+| **安全性** | ✅ 不依赖 eval，类型安全 | ⚠️ 需要解析 LLM 输出 |
+| **成本** | ✅ 无 API 成本 | ❌ 每次调用产生 API 成本 |
+| **适用场景** | 常见动作，标准模板 | 复杂或领域特定的约束 |
+
+**推荐使用模板化方法**，因为：
+1. 对于常见的机器人动作（pick_up, put_in, put_on, toggle_on 等），模板已经涵盖了所有物理先验
+2. 确定性保证使得调试和复现更容易
+3. 无需外部 API 依赖，可以离线运行
+
+### 2.6 优势总结
+
 该设计将失败检测从“目标状态一致性检查”升级为“**动作因果一致性验证**”，使系统能够在物理上不可能的动作发生时即时定位失败原因，实现与物理仿真环境对齐的精确归因。
+
+**模板化方法的额外优势**：
+- **零配置运行**：不需要 LLM API 密钥即可使用
+- **类型安全**：使用函数而非字符串，编译器可以检查类型错误
+- **易于测试**：每个 predicate 函数都可以独立测试
+- **可扩展**：新动作模板可以轻松添加到 `ACTION_TEMPLATES` 字典中
 
 ⸻
 
 #️⃣ 3. 环境记忆模块（Environment Memory）
 
-为解决遮挡、跳变、噪声等现实问题：
+**核心问题**：在真实环境中，如果没有 Environment Memory，CRAFT 会被感知噪声"玩死"。
+
+## 3.1 环境记忆解决的真实问题
+
+### 问题 1：遮挡（Occlusion）
+- 杯子被机械臂挡住
+- Detic 检测不到
+- Scene Graph 突然"消失"
+- **👉 不是任务失败，是感知失败**
+
+### 问题 2：跳变（Teleportation）
+- mug 瞬间从桌子 → 水槽
+- 深度误差 / mask 错误
+- **👉 不是动作 teleport，是感知异常**
+
+### 问题 3：置信度波动
+- 同一物体在不同帧的检测置信度波动（0.7 → 0.9 → 0.6）
+- 关系检测不稳定（inside 关系时有时无）
+- **👉 需要时间平滑**
+
+## 3.2 Environment Memory 的核心思想
+
+**用时间连续性，约束"世界不可能乱跳"**
 
 EnvironmentMemory 使用：
 	•	Kalman / Bayesian filter（位置 smoothing）
 	•	last_seen state 存储
 	•	occlusion prediction（根据机械臂与摄像头视锥）
 	•	状态置信度衰减模型
+	•	关系稳定性跟踪
 
 ✔ Memory 输出世界状态（WorldState）
 
 WorldState:
     objects: {object_name → ObjectState}
+        - position: smoothed 3D position
+        - velocity: estimated velocity
+        - confidence: temporal-averaged confidence
+        - occluded: boolean flag
+        - occlusion_duration: seconds since last seen
+        - position_variance: uncertainty measure
     relations: {(a,b) → RelationState}
-    occlusion_flags
-    smoothed_positions
-    last_seen
-    velocity
+        - confidence: stable confidence over time
+        - stable_count: consecutive frames with relation
+    timestamp: current time
+    frame_count: number of frames processed
 
 
 ⸻
 
-✔ Memory 更新伪代码
+✔ Memory 更新伪代码（论文级）
 
-Algorithm MemoryUpdate(raw_state):
+Algorithm UpdateEnvironmentMemory(detections, relations, memory, t):
 
-    for each object in raw_state:
-        if object.visible:
-            apply_kalman_filter(object)
-            update_last_seen(object)
+    for each object o in memory:
+        if o detected at time t:
+            # Object visible: update with Kalman-like smoothing
+            o.position = KalmanUpdate(o.position, detection.position)
+            o.confidence = temporal_average(o.confidence_history)
+            o.last_seen_ts = t
+            o.occluded = False
+            o.occlusion_duration = 0.0
+            
+            # Check for teleportation (sudden large movement)
+            if distance(o.position, o.previous_position) > threshold:
+                o.position_variance *= 2  # Increase uncertainty
         else:
-            predict_position(object)
-            mark_possible_occlusion(object)
-
-    update_relations()
+            # Object not detected: predict and mark occlusion
+            o.occlusion_duration = t - o.last_seen_ts
+            if o.occlusion_duration > occlusion_threshold:
+                o.occluded = True
+            
+            # Predict position using velocity
+            if o.velocity is not None:
+                o.position = Predict(o.position, o.velocity, dt)
+            
+            # Decay confidence
+            o.confidence *= (1 - decay_rate * o.occlusion_duration)
+    
+    # Update relations with temporal stability
+    for each relation r in relations:
+        if r detected at time t:
+            r.stable_count += 1
+            r.confidence = temporal_average(r.confidence_history)
+        else:
+            r.stable_count = 0  # Reset if relation disappears
+    
     return smoothed_world_state
 
 
@@ -590,14 +814,11 @@ Causal Chain:
 
 #️⃣ 9. 完整系统结构图（概念）
 
+## 9.1 仿真环境流程
+
 +------------------+
-|   Perception     |
+|   AI2THOR States |
 +------------------+
-           |
-           v
-+---------------------------+
-|    Environment Memory     |
-+---------------------------+
            |
            v
 +---------------------------+
@@ -612,12 +833,66 @@ Causal Chain:
            v
 +---------------------------+
 |  Constraint Executor      |
-|  (logic + geometry + mem)|
 +---------------------------+
            |
            v
 +---------------------------+
 |   Failure Detection       |
++---------------------------+
+
+## 9.2 真实环境流程（完整版）
+
++------------------+
+|   RGB-D Stream   |
++------------------+
+           |
+           v
++---------------------------+
+| Multi-Modal Perception   |
+| (MDETR/CLIP/Detic/SAM)   |
++---------------------------+
+           |
+           v
++---------------------------+
+| Multi-object Tracking     |
++---------------------------+
+           |
+           v
++---------------------------+
+| Scene Graph Construction  |
+| (with confidence scores)  |
++---------------------------+
+           |
+           v
++---------------------------+
+|    Environment Memory     |
+| (temporal smoothing,      |
+|  occlusion handling)      |
++---------------------------+
+           |
+           v
++---------------------------+
+|  Smoothed Scene Graph     |
++---------------------------+
+           |
+           v
++---------------------------+
+|   LLM Constraint Compiler |
+| (Action-aware)            |
++---------------------------+
+           |
+           v
++---------------------------+
+|  Constraint Executor      |
+| (with confidence          |
+|  thresholds)              |
++---------------------------+
+           |
+           v
++---------------------------+
+|   Failure Detection       |
+| (distinguish perception   |
+|  errors vs. failures)     |
 +---------------------------+
 
 

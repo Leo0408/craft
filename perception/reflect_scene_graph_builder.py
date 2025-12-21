@@ -290,7 +290,12 @@ class ReflectSceneGraphBuilder:
         
         relations = self.scene_analyzer.compute_spatial_relations(detections_for_relations)
         
+        print(f"  Computed {len(relations)} spatial relations")
+        if len(relations) > 0:
+            print(f"  Sample relations: {relations[:3]}")
+        
         # Add edges based on spatial relations
+        edges_added = 0
         for obj1_name, obj2_name, rel_type, confidence in relations:
             node1 = local_sg.get_node(obj1_name)
             node2 = local_sg.get_node(obj2_name)
@@ -298,6 +303,15 @@ class ReflectSceneGraphBuilder:
             if node1 and node2:
                 edge = Edge(node1, node2, rel_type, confidence=confidence)
                 local_sg.add_edge(edge)
+                edges_added += 1
+            else:
+                print(f"  ⚠️  Warning: Could not find nodes for relation {obj1_name} -> {obj2_name}")
+                if node1 is None:
+                    print(f"     Node '{obj1_name}' not found in scene graph")
+                if node2 is None:
+                    print(f"     Node '{obj2_name}' not found in scene graph")
+        
+        print(f"  Added {edges_added} edges to scene graph")
         
         return local_sg
     

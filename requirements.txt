@@ -14,6 +14,18 @@ imagecodecs>=2021.0.0
 open3d>=0.13.0
 scikit-learn>=0.24.0
 
+# Dependencies for REFLECT video generation
+# Note: moviepy 1.0.3 is required (2.x has different API, no editor module)
+moviepy==1.0.3
+imageio-ffmpeg>=0.4.0
+decorator==4.4.2  # Required for moviepy 1.0.3 compatibility
+proglog>=0.1.12
+python-dotenv>=0.10
+
+# Dependencies for REFLECT utils (sentence transformers)
+sentence-transformers>=2.0.0
+transformers>=4.41.0
+
 # Optional dependencies for AI2THOR simulation
 # ai2thor>=4.0.0
 

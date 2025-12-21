@@ -45,7 +45,16 @@ class ReflectDataLoader:
         if not os.path.exists(zarr_path):
             raise FileNotFoundError(f"Zarr file not found: {zarr_path}")
         
-        return zarr.open(zarr_path, 'r')
+        # Use zarr.open_group for opening zarr groups
+        try:
+            return zarr.open_group(zarr_path, mode='r')
+        except AttributeError:
+            # Fallback to zarr.open if open_group doesn't exist
+            try:
+                return zarr.open(zarr_path, mode='r')
+            except TypeError:
+                # If zarr.open doesn't accept mode parameter, try without it
+                return zarr.open(zarr_path)
     
     def load_frame_rgb(self, zarr_group: zarr.Group, step_idx: int, folder_name: Optional[str] = None) -> Optional[np.ndarray]:
         """
@@ -209,13 +218,37 @@ class ReflectDataLoader:
         Returns:
             Total number of frames
         """
-        try:
-            if 'data/stage' in zarr_group:
-                return len(zarr_group['data/stage'])
-            elif 'stage' in zarr_group:
-                return len(zarr_group['stage'])
-        except:
-            pass
+        # Try multiple methods to get frame count
+        methods = [
+            # Method 1: Check data/stage shape[0] (zarr Array uses shape, not len)
+            lambda: zarr_group['data']['stage'].shape[0] if 'data' in zarr_group and 'stage' in zarr_group['data'] and hasattr(zarr_group['data']['stage'], 'shape') and len(zarr_group['data']['stage'].shape) > 0 else None,
+            # Method 2: Check data/stage array (string path) - try shape first
+            lambda: zarr_group['data/stage'].shape[0] if 'data/stage' in zarr_group and hasattr(zarr_group['data/stage'], 'shape') and len(zarr_group['data/stage'].shape) > 0 else None,
+            # Method 3: Check stage array directly (shape)
+            lambda: zarr_group['stage'].shape[0] if 'stage' in zarr_group and hasattr(zarr_group['stage'], 'shape') and len(zarr_group['stage'].shape) > 0 else None,
+            # Method 4: Try len() for non-array objects (fallback)
+            lambda: len(zarr_group['data']['stage']) if 'data' in zarr_group and 'stage' in zarr_group['data'] and not hasattr(zarr_group['data']['stage'], 'shape') else None,
+            # Method 5: Count frames in videos/color directory
+            lambda: len(list(zarr_group['data']['videos']['color'].keys())) if 'data' in zarr_group and 'videos' in zarr_group['data'] and 'color' in zarr_group['data']['videos'] else None,
+            # Method 6: Count frames in videos/color (string path)
+            lambda: len(list(zarr_group['data/videos/color'].keys())) if 'data/videos/color' in zarr_group else None,
+            # Method 7: Count frames in videos/color (alternative path)
+            lambda: len(list(zarr_group['videos/color'].keys())) if 'videos/color' in zarr_group else None,
+            # Method 8: Count frames in videos/depth directory
+            lambda: len(list(zarr_group['data']['videos']['depth'].keys())) if 'data' in zarr_group and 'videos' in zarr_group['data'] and 'depth' in zarr_group['data']['videos'] else None,
+            # Method 9: Count frames in videos/depth (string path)
+            lambda: len(list(zarr_group['data/videos/depth'].keys())) if 'data/videos/depth' in zarr_group else None,
+            # Method 10: Count frames in videos/depth (alternative path)
+            lambda: len(list(zarr_group['videos/depth'].keys())) if 'videos/depth' in zarr_group else None,
+        ]
+        
+        for i, method in enumerate(methods, 1):
+            try:
+                result = method()
+                if result is not None and result > 0:
+                    return result
+            except (KeyError, AttributeError, TypeError, IndexError) as e:
+                continue
         
         return 0
     
