@@ -192,6 +192,78 @@ class MDETRDetector:
         b = b * torch.tensor([img_w, img_h, img_w, img_h], dtype=torch.float32)
         return b
     
+    def _expand_object_names(self, obj_name: str) -> List[str]:
+        """
+        Expand object name to multiple prompt variations for better detection
+        
+        Args:
+            obj_name: Original object name
+            
+        Returns:
+            List of prompt variations (simpler names first for better matching)
+        """
+        variations = []
+        obj_lower = obj_name.lower()
+        
+        # Strategy: Try simpler names FIRST (more likely to match MDETR training data)
+        # 1. Extract core object names (remove descriptors)
+        core_names = []
+        
+        # Handle color + object patterns (e.g., "purple cup" -> "cup")
+        color_words = ['red', 'blue', 'green', 'yellow', 'purple', 'white', 'black', 'brown', 'orange', 'pink']
+        for color in color_words:
+            if obj_lower.startswith(color):
+                remaining = obj_lower[len(color):].strip()
+                if remaining:
+                    core_names.append(remaining)
+                    break
+        
+        # Handle compound names
+        words = obj_name.split()
+        
+        # Extract core object type (last significant word)
+        if "cup" in obj_lower or "mug" in obj_lower:
+            core_names.extend(["cup", "mug", "coffee cup"])
+        if "machine" in obj_lower:
+            core_names.extend(["coffee machine", "machine", "coffee maker"])
+        if "table" in obj_lower:
+            core_names.extend(["table", "desk"])
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        for name in core_names:
+            if name.lower() not in seen:
+                variations.append(name)
+                seen.add(name.lower())
+        
+        # 2. Try original name variations
+        if obj_name.lower() not in seen:
+            variations.append(obj_name)
+            seen.add(obj_name.lower())
+        
+        # Add article variations
+        if not obj_name.startswith(('a ', 'an ', 'the ')):
+            article_vars = [f"a {obj_name}", f"the {obj_name}"]
+            for var in article_vars:
+                if var.lower() not in seen:
+                    variations.append(var)
+                    seen.add(var.lower())
+        
+        # 3. Add article variations for core names
+        for core in core_names[:3]:  # Only first 3 core names to avoid too many variations
+            if not core.startswith(('a ', 'an ', 'the ')):
+                article_vars = [f"a {core}", f"the {core}"]
+                for var in article_vars:
+                    if var.lower() not in seen:
+                        variations.append(var)
+                        seen.add(var.lower())
+        
+        # If no variations found, at least return original
+        if not variations:
+            variations = [obj_name]
+        
+        return variations
+    
     def detect_objects(self, rgb_image: Image.Image, object_list: List[str]) -> List[Dict]:
         """
         Detect objects in the image using MDETR
@@ -211,77 +283,157 @@ class MDETRDetector:
         
         # Process each object separately
         for obj_name in object_list:
-            try:
-                # Prepare image
-                img = self.transform(rgb_image).unsqueeze(0).to(self.device)
-                
-                # Run MDETR
-                outputs = self.model(img, [obj_name])
-                
-                # Get predictions
-                probas = 1 - outputs['pred_logits'].softmax(-1)[0, :, -1].cpu()
-                keep = (probas > self.threshold).cpu()
-                
-                if keep.sum() == 0:
-                    continue
-                
-                # Rescale bounding boxes
-                bboxes_scaled = self._rescale_bboxes(
-                    outputs['pred_boxes'].cpu()[0, keep], 
-                    rgb_image.size
-                )
-                
-                # Get masks
-                w, h = rgb_image.size
-                masks = F.interpolate(
-                    outputs["pred_masks"], 
-                    size=(h, w), 
-                    mode="bilinear", 
-                    align_corners=False
-                )
-                masks = masks.cpu()[0, keep].sigmoid() > 0.5
-                
-                # Shrink masks to remove noise
-                shrinked_masks = []
-                for mask in masks:
-                    kernel = np.ones((3, 3), np.uint8)
-                    eroded_mask = cv2.erode(
-                        np.array(mask, dtype=np.float32), 
-                        kernel, 
-                        iterations=2
-                    )
-                    shrinked_masks.append(eroded_mask)
-                shrinked_masks = np.array(shrinked_masks) if len(shrinked_masks) > 0 else masks
-                
-                # Extract text spans
-                tokenized = self.model.detr.transformer.tokenizer.batch_encode_plus(
-                    [obj_name], padding="longest", return_tensors="pt"
-                ).to(img.device)
-                
-                positive_tokens = (outputs["pred_logits"].cpu()[0, keep].softmax(-1) > 0.1).nonzero().tolist()
-                predicted_spans = defaultdict(str)
-                for tok in positive_tokens:
-                    item, pos = tok
-                    if pos < 255:
-                        span = tokenized.token_to_chars(0, pos)
-                        predicted_spans[item] += " " + obj_name[span.start:span.end]
-                
-                labels = [predicted_spans[k] for k in sorted(list(predicted_spans.keys()))]
-                
-                # Create detections
-                for i, (bbox, prob, mask) in enumerate(zip(bboxes_scaled, probas[keep], shrinked_masks)):
-                    detection = {
-                        'label': obj_name,
-                        'bbox': bbox.tolist(),
-                        'mask': mask.astype(bool) if isinstance(mask, np.ndarray) else mask,
-                        'confidence': float(prob),
-                        'position_3d': None
-                    }
-                    detections.append(detection)
+            # Try multiple prompt variations for better detection
+            prompt_variations = self._expand_object_names(obj_name)
+            print(f"  🔍 Detecting '{obj_name}' with {len(prompt_variations)} prompt variations: {prompt_variations[:3]}...")  # Show first 3
+            
+            best_detection = None
+            best_confidence = 0.0
+            best_prompt = None
+            
+            for prompt in prompt_variations:
+                try:
+                    # Prepare image
+                    img = self.transform(rgb_image).unsqueeze(0).to(self.device)
                     
-            except Exception as e:
-                print(f"⚠️  Error detecting {obj_name}: {e}")
-                continue
+                    # Run MDETR with this prompt variation
+                    outputs = self.model(img, [prompt])
+                    
+                    # Get predictions
+                    probas = 1 - outputs['pred_logits'].softmax(-1)[0, :, -1].cpu()
+                    max_prob = probas.max().item() if len(probas) > 0 else 0.0
+                    keep = (probas > self.threshold).cpu()
+                    
+                    # Always print debugging info to help diagnose issues
+                    if keep.sum() == 0:
+                        # Try with lower threshold for this variation
+                        low_threshold = max(0.1, self.threshold * 0.5)
+                        keep_low = (probas > low_threshold).cpu()
+                        if keep_low.sum() > 0:
+                            # Use lower threshold detections but mark them
+                            keep = keep_low
+                            print(f"    ⚠️  Prompt '{prompt}': max_conf={max_prob:.3f}, using lowered threshold {low_threshold:.2f}, found {keep.sum()} detections ✅")
+                        else:
+                            # No detections even with low threshold - always print for debugging
+                            print(f"    📊 Prompt '{prompt}': max_conf={max_prob:.3f} < threshold {low_threshold:.2f}, no detections ❌")
+                    else:
+                        # Found detections with standard threshold
+                        print(f"    ✅ Prompt '{prompt}': max_conf={max_prob:.3f} >= threshold {self.threshold:.2f}, found {keep.sum()} detections")
+                    
+                    if keep.sum() == 0:
+                        continue
+                    
+                    # Get the best detection from this prompt variation
+                    max_conf_idx = probas[keep].argmax()
+                    max_confidence = float(probas[keep][max_conf_idx])
+                    
+                    # Print success message (if not already printed above)
+                    if keep.sum() > 0 and max_prob >= self.threshold:
+                        # Already printed above, skip
+                        pass
+                    
+                    # Only use this variation if it's better than previous ones
+                    if max_confidence > best_confidence:
+                        # Rescale bounding boxes
+                        bboxes_scaled = self._rescale_bboxes(
+                            outputs['pred_boxes'].cpu()[0, keep], 
+                            rgb_image.size
+                        )
+                        
+                        # Get masks
+                        w, h = rgb_image.size
+                        masks = F.interpolate(
+                            outputs["pred_masks"], 
+                            size=(h, w), 
+                            mode="bilinear", 
+                            align_corners=False
+                        )
+                        masks = masks.cpu()[0, keep].sigmoid() > 0.5
+                        
+                        # Shrink masks to remove noise
+                        shrinked_masks = []
+                        for mask in masks:
+                            kernel = np.ones((3, 3), np.uint8)
+                            eroded_mask = cv2.erode(
+                                np.array(mask, dtype=np.float32), 
+                                kernel, 
+                                iterations=2
+                            )
+                            shrinked_masks.append(eroded_mask)
+                        shrinked_masks = np.array(shrinked_masks) if len(shrinked_masks) > 0 else masks
+                        
+                        # Store best detection (use original object name as label)
+                        best_detection = {
+                            'label': obj_name,  # Use original object name
+                            'bbox': bboxes_scaled[max_conf_idx].tolist(),
+                            'mask': shrinked_masks[max_conf_idx].astype(bool) if isinstance(shrinked_masks[max_conf_idx], np.ndarray) else shrinked_masks[max_conf_idx],
+                            'confidence': max_confidence,
+                            'position_3d': None,
+                            'prompt_used': prompt  # Store which prompt worked
+                        }
+                        best_confidence = max_confidence
+                        best_prompt = prompt
+                
+                except Exception as e:
+                    # Continue to next variation, but log the error
+                    print(f"    ⚠️  Error with prompt '{prompt}': {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+            
+            # Add best detection if found
+            if best_detection is not None:
+                print(f"  ✅ Best detection for '{obj_name}': confidence={best_confidence:.3f}, prompt='{best_prompt}'")
+                detections.append(best_detection)
+            else:
+                print(f"  ❌ No detections found for '{obj_name}' with any prompt variation")
+                
+                # Also try to get all detections above threshold (not just best)
+                # This allows detecting multiple instances
+                try:
+                    img = self.transform(rgb_image).unsqueeze(0).to(self.device)
+                    best_prompt = best_detection['prompt_used']
+                    outputs = self.model(img, [best_prompt])
+                    probas = 1 - outputs['pred_logits'].softmax(-1)[0, :, -1].cpu()
+                    keep = (probas > self.threshold).cpu()
+                    
+                    if keep.sum() > 1:  # Multiple detections
+                        bboxes_scaled = self._rescale_bboxes(
+                            outputs['pred_boxes'].cpu()[0, keep], 
+                            rgb_image.size
+                        )
+                        w, h = rgb_image.size
+                        masks = F.interpolate(
+                            outputs["pred_masks"], 
+                            size=(h, w), 
+                            mode="bilinear", 
+                            align_corners=False
+                        )
+                        masks = masks.cpu()[0, keep].sigmoid() > 0.5
+                        
+                        shrinked_masks = []
+                        for mask in masks:
+                            kernel = np.ones((3, 3), np.uint8)
+                            eroded_mask = cv2.erode(
+                                np.array(mask, dtype=np.float32), 
+                                kernel, 
+                                iterations=2
+                            )
+                            shrinked_masks.append(eroded_mask)
+                        shrinked_masks = np.array(shrinked_masks) if len(shrinked_masks) > 0 else masks
+                        
+                        # Add all detections (skip first as it's already added)
+                        for i in range(1, keep.sum().item()):
+                            detection = {
+                                'label': obj_name,
+                                'bbox': bboxes_scaled[i].tolist(),
+                                'mask': shrinked_masks[i].astype(bool) if isinstance(shrinked_masks[i], np.ndarray) else shrinked_masks[i],
+                                'confidence': float(probas[keep][i]),
+                                'position_3d': None
+                            }
+                            detections.append(detection)
+                except:
+                    pass  # If getting multiple detections fails, just use the best one
         
         return detections
     

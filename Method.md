@@ -100,13 +100,47 @@ Algorithm BuildSceneGraph(detections, spatial_relations, task_info):
 
 **推荐组合**（真实环境常见做法）：
 
+### 方案 A：DETIC + CLIP + ByteTrack（推荐）⭐
+
 | 模块 | 推荐模型 | 作用 |
 |------|---------|------|
-| 物体检测 | Grounding-DINO / Detic | 开放词表物体识别（不用预定义类别） |
-| 语义对齐 | CLIP | 属性识别（mug / cup / coffee machine） |
+| 物体检测 | **DETIC** | 开放词表物体识别（比 MDETR 更鲁棒） |
+| 语义过滤 | **CLIP** | 语义匹配、prompt 扩展、误检过滤 |
+| 跟踪 | **ByteTrack** | 多目标跟踪，处理遮挡和ID切换 |
+| 记忆 | **Environment Memory** | 时序平滑、遮挡预测、置信度衰减 |
+
+**核心优势**：
+- ✅ **DETIC**：更强的开放词表检测能力，支持 21k 类别
+- ✅ **CLIP 语义过滤**：通过语义相似度过滤误检，支持 prompt 扩展（如 "cup" → "a cup", "the cup", "coffee cup"）
+- ✅ **ByteTrack 跟踪**：处理遮挡、ID 切换，提供稳定的对象轨迹
+- ✅ **Memory 集成**：与 Environment Memory 无缝集成，提供时序一致性
+
+**工作流程**：
+```
+RGB-D Stream
+    ↓
+DETIC Detection (open-vocab, 21k classes)
+    ↓
+CLIP Semantic Filtering (filter by object_list, expand prompts)
+    ↓
+ByteTrack Tracking (multi-object tracking)
+    ↓
+Environment Memory (temporal smoothing, occlusion handling)
+    ↓
+Scene Graph Construction (with confidence scores)
+```
+
+### 方案 B：MDETR（原始方案，用于对比）
+
+| 模块 | 推荐模型 | 作用 |
+|------|---------|------|
+| 物体检测 | MDETR | 开放词表物体识别 |
+| 语义对齐 | CLIP（可选） | 属性识别（mug / cup / coffee machine） |
 | 分割 | SAM / SAM2 | 像素级掩码生成 |
 | 跟踪 | SORT / ByteTrack | 多目标跟踪 |
 | 深度 | RGB-D 或单目估计 | 3D 位置估计 |
+
+**注意**：MDETR 在某些场景下可能检测不到对象，建议使用 DETIC + CLIP 方案。
 
 **输入**：RGB-D Stream 或 RGB Stream
 
@@ -156,37 +190,158 @@ class Node:
 
 真实环境里，关系一定是"软"的（带置信度）：
 
+### 增强的空间关系检测算法
+
+**改进版本**：使用 3D 边界框和几何分析，支持多种关系类型：
+
 ```python
-def infer_relations(nodes):
-    edges = []
-    for a in nodes:
-        for b in nodes:
-            if a == b: continue
+def compute_spatial_relations(detections):
+    """
+    增强的空间关系计算（优先级顺序）
+    
+    输入：检测结果（包含 position_3d 和可选的 bbox3d）
+    输出：关系列表 (obj1, obj2, relation_type, confidence)
+    """
+    relations = []
+    
+    for det1, det2 in pairs(detections):
+        # 优先级 1: inside 关系（使用 3D 边界框）
+        if has_bbox3d(det1) and has_bbox3d(det2):
+            if bbox_inside(det1.bbox3d, det2.bbox3d, overlap_ratio=0.7):
+                relations.append((det1, det2, "inside", 0.9))
+                continue  # 跳过其他关系
+        
+        # 优先级 2: on_top_of 关系（改进版）
+        distance = compute_distance(det1.position_3d, det2.position_3d)
+        if distance < close_threshold:
+            z_diff = det1.z - det2.z
+            horizontal_dist = compute_horizontal_distance(det1, det2)
             
-            # 基于几何关系推断，带置信度
-            if bbox_inside(a.bbox, b.bbox):
-                confidence = compute_inside_confidence(a, b)
-                edges.append(Edge(a, b, "inside", confidence=confidence))
-            
-            if on_top_of(a, b):
-                confidence = compute_on_top_confidence(a, b)
-                edges.append(Edge(a, b, "on_top_of", confidence=confidence))
-    return edges
+            # 要求：垂直高度差 > 50mm 且水平距离 < 200mm
+            if z_diff > 50mm and horizontal_dist < 200mm:
+                relations.append((det1, det2, "on_top_of", 0.85))
+                continue
+        
+        # 优先级 3: in_contact 关系
+        if distance < 100mm:
+            relations.append((det1, det2, "in_contact", 1.0))
+            continue
+        
+        # 优先级 4: near 关系（默认）
+        if distance < 400mm:
+            relations.append((det1, det2, "near", 0.7))
+    
+    return relations
 ```
+
+### 关系类型和检测条件
+
+| 关系类型 | 检测条件 | 置信度 | 说明 |
+|---------|---------|--------|------|
+| **inside** | 3D 边界框包含（重叠率 ≥ 70%） | 0.9 | 物体 A 在物体 B 内部（如杯子在咖啡机内） |
+| **on_top_of** | 垂直高度差 > 50mm 且水平距离 < 200mm | 0.85 | 物体 A 在物体 B 上方（如杯子在桌子上） |
+| **in_contact** | 3D 距离 < 100mm | 1.0 | 物体直接接触 |
+| **near** | 3D 距离 < 400mm | 0.7 | 物体接近但没有特定空间关系 |
+
+### 检测算法伪代码
+
+```
+Algorithm ComputeSpatialRelations(detections):
+    relations = []
+    
+    FOR each pair (det1, det2) in detections:
+        
+        # Priority 1: Check "inside" using 3D bounding boxes
+        IF det1.bbox3d AND det2.bbox3d:
+            IF bbox_inside(det1.bbox3d, det2.bbox3d, overlap_ratio=0.7):
+                relations.append((det1, det2, "inside", 0.9))
+                CONTINUE  # Skip other relations
+        
+        # Priority 2: Check "on_top_of" with enhanced criteria
+        distance = ||det1.position - det2.position||
+        IF distance < 400mm:
+            z_diff = det1.z - det2.z
+            horizontal_dist = ||(det1.x, det1.y) - (det2.x, det2.y)||
+            
+            IF z_diff > 50mm AND horizontal_dist < 200mm:
+                relations.append((det1, det2, "on_top_of", 0.85))
+                CONTINUE
+        
+        # Priority 3: Check "in_contact"
+        IF distance < 100mm:
+            relations.append((det1, det2, "in_contact", 1.0))
+            CONTINUE
+        
+        # Priority 4: Default to "near"
+        IF distance < 400mm:
+            relations.append((det1, det2, "near", 0.7))
+    
+    RETURN relations
+```
+
+### 关键改进点
+
+1. **3D 边界框支持**：
+   - 使用 3D 边界框检测 "inside" 关系
+   - 支持 Open3D `AxisAlignedBoundingBox` 和字典格式
+   - 计算边界框重叠率（默认 70%）
+
+2. **改进的 on_top_of 检测**：
+   - 不仅检查垂直高度差，还检查水平距离
+   - 降低阈值：从 700mm 降到 50mm（更符合真实环境）
+   - 避免误判：要求水平距离也要小
+
+3. **优先级机制**：
+   - 按优先级检测：inside → on_top_of → in_contact → near
+   - 一旦检测到高优先级关系，跳过低优先级检测
+
+4. **单位自动检测**：
+   - 自动检测坐标单位（米或毫米）
+   - 根据单位调整阈值
 
 **关键点**：
 - 真实环境的关系推断基于几何（bbox, 3D position），不是 ground truth
 - 每个关系都有置信度分数
+- 使用 3D 边界框可以更准确地检测 "inside" 和 "on_top_of" 关系
 - 这正是为什么需要 Environment Memory 来稳定关系
 
 ## 1.5.4 真实环境完整流程
 
+### DETIC + CLIP 方案（推荐）
+
 ```
 RGB-D Stream
     ↓
-Open-vocab Detection (MDETR/CLIP/Detic)
+DETIC Detection (open-vocab, 21k classes)
     ↓
-Multi-object Tracking
+CLIP Semantic Filtering
+    - Prompt expansion ("cup" → ["a cup", "the cup", "coffee cup"])
+    - Semantic similarity filtering (threshold: 0.25)
+    ↓
+ByteTrack Multi-object Tracking
+    - Track IDs across frames
+    - Handle occlusion and ID switches
+    ↓
+Scene Graph Construction (with confidence)
+    - Nodes: objects with DETIC confidence + CLIP score
+    - Edges: spatial relations with confidence
+    ↓
+Environment Memory (temporal smoothing, occlusion handling)
+    - Kalman-like position smoothing
+    - Occlusion prediction
+    - Confidence decay for unseen objects
+    ↓
+Smoothed Scene Graph (for constraint validation)
+```
+
+### MDETR 方案（原始，用于对比）
+
+```
+RGB-D Stream
+    ↓
+MDETR Detection (open-vocab)
+    ↓
+Multi-object Tracking (optional)
     ↓
 Scene Graph Construction (with confidence)
     ↓
@@ -214,14 +369,20 @@ Smoothed Scene Graph (for constraint validation)
 		- 提高约束生成质量
 		- 加快约束验证速度
 
-**解决方案**：
-	•	从任务信息中提取相关对象（从 actions、success_condition、preactions）
-	•	只保留相关对象及其直接关系
-	•	支持精确匹配和部分匹配（处理对象名变体）
+**解决方案（优化版）**：使用**闭包（Closure）方法**进行子图裁剪
+
+## 1.1.1 闭包裁剪算法（Closure-based Subgraph Extraction）
+
+**核心改进**：使用 BFS 从任务相关对象开始，沿着 `inside`/`on_top_of`/`supported_by` 边扩展，确保包含所有相关的容器和支撑结构。
+
+**为什么需要闭包方法**：
+	•	简单裁剪可能遗漏重要的容器对象（如 Pot 在 Sink 中，但 Sink 不在任务相关对象列表中）
+	•	需要包含支撑结构（如 Mug 在 CounterTop 上，CounterTop 需要被包含）
+	•	确保约束验证时能正确检查容器状态和支撑关系
 
 ✔ 伪代码
 
-Algorithm ExtractTaskRelevantSubgraph(full_scene_graph, task_info):
+Algorithm ExtractTaskRelevantSubgraphWithClosure(full_scene_graph, task_info):
 
     # 1. 提取任务相关对象名称
     relevant_objects = Set()
@@ -241,26 +402,110 @@ Algorithm ExtractTaskRelevantSubgraph(full_scene_graph, task_info):
         objects = ParseActionParameters(preaction)
         relevant_objects.add_all(objects)
     
-    # 2. 创建子图
-    subgraph = SceneGraph()
-    
-    # 3. 查找相关节点（支持精确匹配和部分匹配）
+    # 2. 查找初始相关节点
+    initial_nodes = []
     for node in full_scene_graph.nodes:
         if IsRelevant(node, relevant_objects):
+            initial_nodes.append(node)
+    
+    # 3. 使用 BFS 闭包扩展：沿着 inside/on_top_of/supported_by 边扩展
+    closure = Set(initial_nodes)
+    queue = Queue(initial_nodes)
+    expansion_edge_types = ["inside", "on_top_of", "supported_by"]
+    
+    while queue is not empty:
+        obj = queue.pop()
+        for edge in full_scene_graph.get_edges_of(obj):
+            if edge.type in expansion_edge_types:
+                # 确定目标节点（边的另一端）
+                target_node = edge.dst if edge.src == obj else edge.src
+                
+                # 如果目标节点不在闭包中，添加到闭包和队列
+                if target_node not in closure:
+                    closure.add(target_node)
+                    queue.append(target_node)
+    
+    # 4. 创建子图，包含闭包中的所有节点
+    subgraph = SceneGraph()
+    for node in closure:
             subgraph.add_node(node)
     
-    # 4. 添加相关边
+    # 5. 添加闭包内节点之间的所有边
     for edge in full_scene_graph.edges:
-        if (edge.start in subgraph.nodes OR edge.end in subgraph.nodes):
-            # 如果边的端点至少有一个在子图中，保留该边
-            # 如果端点不在子图中，也添加端点节点（保留直接关系）
-            if edge.start not in subgraph.nodes:
-                subgraph.add_node(edge.start)
-            if edge.end not in subgraph.nodes:
-                subgraph.add_node(edge.end)
+        if edge.start in closure AND edge.end in closure:
             subgraph.add_edge(edge)
     
     return subgraph
+
+**示例**：
+	•	任务：makeCoffee，相关对象：{Mug, CoffeeMachine}
+	•	初始节点：Mug, CoffeeMachine
+	•	闭包扩展：
+		- Mug --[on_top_of]--> CounterTop → 添加 CounterTop
+		- CoffeeMachine --[inside]--> CounterTop → CounterTop 已在闭包中
+		- Mug --[inside]--> CoffeeMachine → 关系已存在
+	•	最终子图：{Mug, CoffeeMachine, CounterTop} + 相关边
+
+## 1.1.2 Action-aware Scene Graph
+
+**核心思想**：Scene Graph 必须明确绑定到具体的动作和时间步，以便正确区分 Precondition、Postcondition 和 Invariant 的验证时机。
+
+**问题**：
+	•	传统 SG 只表示"当前帧的世界"，无法区分：
+		- Precondition violation（动作前检查）
+		- Postcondition violation（动作后检查）
+		- Invariant violation（动作前后都要检查）
+	•	无法明确 SG 是为了验证哪个 Action
+
+**解决方案**：Action-conditioned Scene Graph
+
+```python
+class SceneGraph:
+    def __init__(self, task=None, event=None, timestep=None, action=None):
+        self.nodes = Set()
+        self.edges = Dict()
+        self.task = task
+        self.event = event
+        # Action-aware fields
+        self.timestep: Optional[int] = timestep  # Which timestep this SG represents
+        self.action: Optional[str] = action  # Which action this SG is for
+```
+
+**SG 用途与时间步对应关系**：
+
+| SG 用途 | 使用哪一帧 | timestep | action |
+|---------|-----------|----------|--------|
+| **Precondition** | action 前一帧 | `action_idx - 1` | `action` |
+| **Postcondition** | action 后一帧 | `action_idx + 1` | `action` |
+| **Invariant** | action 前 & 后 | `action_idx - 1` 和 `action_idx + 1` | `action` |
+| **Goal** | 最终帧 | `len(events) - 1` | `None` |
+
+**使用示例**：
+
+```python
+# Precondition 验证：使用动作执行前的场景图
+pre_sg = generate_scene_graph_from_event(
+    events[action_idx - 1], 
+    task_info, 
+    timestep=action_idx - 1, 
+    action=action
+)
+pre_sg = pre_sg.extract_task_relevant_subgraph_with_closure(task_info)
+
+# Postcondition 验证：使用动作执行后的场景图
+post_sg = generate_scene_graph_from_event(
+    events[action_idx + 1], 
+    task_info, 
+    timestep=action_idx + 1, 
+    action=action
+)
+post_sg = post_sg.extract_task_relevant_subgraph_with_closure(task_info)
+```
+
+**优势**：
+	•	明确每个 SG 的验证目的（Precondition/Postcondition/Invariant）
+	•	自动选择正确的时间步进行验证
+	•	支持动作级失败溯因（知道是哪个动作的哪个约束失败）
 
 **匹配策略**：
 	•	精确匹配：对象名称完全匹配
@@ -275,8 +520,69 @@ Algorithm ExtractTaskRelevantSubgraph(full_scene_graph, task_info):
 	•	完整场景图：90个节点 → 裁剪后：~10个节点
 
 **实现位置**：
-	•	`core/scene_graph.py`：`SceneGraph.extract_task_relevant_subgraph()` 方法
-	•	使用方式：`task_relevant_sg = full_sg.extract_task_relevant_subgraph(task_info)`
+	•	`core/scene_graph.py`：`SceneGraph.extract_task_relevant_subgraph_with_closure()` 方法
+	•	使用方式：`task_relevant_sg = full_sg.extract_task_relevant_subgraph_with_closure(task_info)`
+
+## 1.1.2 Action-aware Scene Graph
+
+**核心思想**：Scene Graph 必须明确绑定到具体的动作和时间步，以便正确区分 Precondition、Postcondition 和 Invariant 的验证时机。
+
+**问题**：
+	•	传统 SG 只表示"当前帧的世界"，无法区分：
+		- Precondition violation（动作前检查）
+		- Postcondition violation（动作后检查）
+		- Invariant violation（动作前后都要检查）
+	•	无法明确 SG 是为了验证哪个 Action
+
+**解决方案**：Action-conditioned Scene Graph
+
+```python
+class SceneGraph:
+    def __init__(self, task=None, event=None, timestep=None, action=None):
+        self.nodes = Set()
+        self.edges = Dict()
+        self.task = task
+        self.event = event
+        # Action-aware fields
+        self.timestep: Optional[int] = timestep  # Which timestep this SG represents
+        self.action: Optional[str] = action  # Which action this SG is for
+```
+
+**SG 用途与时间步对应关系**：
+
+| SG 用途 | 使用哪一帧 | timestep | action |
+|---------|-----------|----------|--------|
+| **Precondition** | action 前一帧 | `action_idx - 1` | `action` |
+| **Postcondition** | action 后一帧 | `action_idx + 1` | `action` |
+| **Invariant** | action 前 & 后 | `action_idx - 1` 和 `action_idx + 1` | `action` |
+| **Goal** | 最终帧 | `len(events) - 1` | `None` |
+
+**使用示例**：
+
+```python
+# Precondition 验证：使用动作执行前的场景图
+pre_sg = generate_scene_graph_from_event(
+    events[action_idx - 1], 
+    task_info, 
+    timestep=action_idx - 1, 
+    action=action
+)
+pre_sg = pre_sg.extract_task_relevant_subgraph_with_closure(task_info)
+
+# Postcondition 验证：使用动作执行后的场景图
+post_sg = generate_scene_graph_from_event(
+    events[action_idx + 1], 
+    task_info, 
+    timestep=action_idx + 1, 
+    action=action
+)
+post_sg = post_sg.extract_task_relevant_subgraph_with_closure(task_info)
+```
+
+**优势**：
+	•	明确每个 SG 的验证目的（Precondition/Postcondition/Invariant）
+	•	自动选择正确的时间步进行验证
+	•	支持动作级失败溯因（知道是哪个动作的哪个约束失败）
 
 
 ⸻
@@ -299,31 +605,137 @@ Algorithm ExtractTaskRelevantSubgraph(full_scene_graph, task_info):
 | `toggle_on(Y)` | `reachable(Y)` | `toggled(Y) == True` |
 | `toggle_off(Y)`| `toggled(Y) == True` | `toggled(Y) == False` |
 
-### 2.3 主算法：GenerateActionAwareConstraints
-该算法遍历机器人的动作序列，为每一个动作实例化对应的物理约束。
+### 2.3 主算法：GenerateActionAwareConstraints（改进版）
+
+#### 2.3.1 当前实现的问题（基于 improve4.md）
+
+虽然约束语义模板设计正确，但当前实现存在系统性错误：
+
+**❌ 问题 1：使用 final_scene_graph 生成所有动作约束**
+- `final_sg` 是任务完成后的"未来世界"
+- LLM 在生成第 1～N 步动作的约束时不可避免"偷看未来"
+- 导致前后置条件严重错位，违反因果顺序
+
+**❌ 问题 2：约束生成是"任务级"，但目标是"动作级"**
+- 一次 Prompt 覆盖整个任务 + 全动作序列
+- LLM 会自动补全跨动作的因果链，无法保证每条约束只对应一个原子动作
+
+**❌ 问题 3：Action Binding 是"事后修补"，而非"生成即绑定"**
+- LLM 生成后再用字符串/对象/语义匹配回绑动作
+- Binding 逻辑复杂且不可靠
+
+#### 2.3.2 改进后的算法（Action-centric Constraint Instantiation）
+
+**核心改动思想**：从 **"Task-level constraint generation"** → 转为 **"Action-centric constraint instantiation"**
 
 ```python
-Algorithm GenerateActionAwareConstraints:
-Input: scene_graph, action_sequence
+Algorithm GenerateActionAwareConstraints_Improved:
+Input: action_sequence
 Output: action_bound_constraints
 
 BEGIN
     constraints = []
-    FOR each action IN action_sequence:
-        # 1. 查找动作模板
-        template = ACTION_TEMPLATE_LIBRARY.get(action.name)
+    FOR i, action IN enumerate(action_sequence):
+        # 1. 解析当前动作（不依赖 scene graph）
+        action_type, action_args = parse_action(action)
         
-        # 2. 生成前置条件 (Preconditions)
+        # 2. 查找动作模板
+        template = ACTION_TEMPLATE_LIBRARY.get(action_type)
+        IF template is None:
+            CONTINUE
+        
+        # 3. 为当前动作生成前置条件 (Preconditions)
         FOR each pre_template IN template["pre"]:
-            constraints.append(Instantiate(pre_template, action, type='PRE'))
-            
-        # 3. 生成后置条件 (Postconditions)
+            constraint = Instantiate(
+                pre_template,
+                action_args,
+                type='precondition',
+                action_index=i,  # 生成时就绑定
+                action=action
+            )
+            constraints.append(constraint)
+        
+        # 4. 为当前动作生成后置条件 (Postconditions)
         FOR each post_template IN template["post"]:
-            constraints.append(Instantiate(post_item, action, type='POST'))
-            
+            constraint = Instantiate(
+                post_template,
+                action_args,
+                type='postcondition',
+                action_index=i,  # 生成时就绑定
+                action=action
+            )
+            constraints.append(constraint)
+    
     RETURN constraints
 END
 ```
+
+**关键改进点**：
+
+1. **按动作生成**：每个动作独立生成约束，避免因果混乱
+2. **生成即绑定**：约束生成时就绑定 `action_index = i`，无需后续匹配
+3. **不依赖 final_sg**：约束生成阶段不使用最终场景图，只用于验证阶段
+4. **Action-local Prompt**：如果使用 LLM，Prompt 只包含当前动作信息，不包含全任务上下文
+
+#### 2.3.3 LLM-based 改进版 Prompt 设计
+
+如果使用 LLM 方法，应采用 Action-local Prompt：
+
+**System Prompt**:
+```
+You are a robot task analyzer. Generate constraints for a SINGLE action by 
+instantiating the provided action semantic template.
+```
+
+**User Prompt** (只包含当前动作):
+```
+Current Action: {action}
+Action Index: {action_index}
+Action Type: {action_type}
+Action Arguments: {action_args}
+
+Action Semantic Template:
+    Preconditions: {pre_templates}
+    Postconditions: {post_templates}
+
+Rules:
+- Generate constraints ONLY for this action
+- Do NOT reference future actions
+- Do NOT reference final goal state
+- Instantiate templates with actual object names from action arguments
+
+Output JSON format:
+{
+  "constraints": [
+    {
+      "id": "C1",
+      "type": "precondition",
+      "template": "holding(Mug)",
+      "description": "Robot must be holding the Mug",
+      "action_index": {action_index},
+      "action": "{action}"
+    }
+  ]
+}
+```
+
+**明确禁止**：
+- ❌ 引入后续动作
+- ❌ 引入最终 goal 状态
+- ❌ 使用 final_scene_graph 作为输入
+
+#### 2.3.4 Scene Graph 使用策略
+
+**原则**：
+- ❌ **不使用** `final_sg` 做动作约束生成
+- ✅ **只用于**：
+  - 约束校验（constraint checking）
+  - 失败分析（why failed）
+  - 物体属性补充（isOpen / isFilled）
+
+**推荐方案**：
+- **约束生成阶段**：不依赖 scene graph
+- **约束验证阶段**：使用 scene graph
 
 ### 2.4 约束实例化与编译（模板 → 可执行代码）
 

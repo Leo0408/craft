@@ -146,21 +146,37 @@ class ReflectSceneGraphBuilder:
             print(f"Nothing detected in frame {step_idx}")
             return local_sg
         
-        # Process each detection
+        # IMPORTANT: Group detections by label and keep only the best one for each label
+        # This prevents later detections from overwriting earlier ones
+        detections_by_label = {}
         for det in detections:
             label = det['label']
+            confidence = det.get('confidence', 0.0)
             
             # Filter distractors
             if label.split("-")[0] in distractor_list:
                 print(f"Filtering out distractor: {label}")
                 continue
             
+            # Keep only the detection with highest confidence for each label
+            if label not in detections_by_label:
+                detections_by_label[label] = det
+            elif confidence > detections_by_label[label].get('confidence', 0.0):
+                print(f"  ⚠️  Replacing {label} detection: conf {detections_by_label[label].get('confidence', 0.0):.3f} -> {confidence:.3f}")
+                detections_by_label[label] = det
+        
+        print(f"  📊 After grouping: {len(detections_by_label)} unique labels from {len(detections)} detections")
+        
+        # Process each unique detection (one per label)
+        for label, det in detections_by_label.items():
+            confidence = det.get('confidence', 0.0)
+            print(f"  Processing {label} (conf: {confidence:.3f}) with bbox: {det['bbox']}")
+            
             # Get mask from detection (if available)
             mask = det.get('mask')
             if mask is None:
                 # Create mask from bbox
                 bbox = det['bbox']
-                print(f"  Processing {label} with bbox: {bbox}")
                 
                 mask = np.zeros(depth.shape, dtype=bool)
                 # Ensure bbox coordinates are valid
@@ -233,7 +249,9 @@ class ReflectSceneGraphBuilder:
                 print(f"⚠️  No points for {label}, skipping")
                 continue
             
+            # Store 2D bbox with the detection (use the original detection's bbox)
             bbox2d_dict[label] = np.array(det['bbox'])
+            print(f"    ✅ Stored bbox2d for {label}: {bbox2d_dict[label]}")
         
         # Build scene graph nodes
         for label in pcd_dict.keys():
@@ -270,7 +288,7 @@ class ReflectSceneGraphBuilder:
             )
             local_sg.add_node(node)
         
-        # Compute spatial relationships using each object's unique centroid
+        # Compute spatial relationships using each object's unique centroid and 3D bbox
         # IMPORTANT: Use pcd_dict (frame-specific) not total_points_dict (accumulated)
         # This should be AFTER all nodes are added
         detections_for_relations = []
@@ -282,9 +300,12 @@ class ReflectSceneGraphBuilder:
             if len(obj_points) > 0:
                 # Use centroid of THIS OBJECT'S point cloud
                 centroid = np.mean(obj_points, axis=0)
+                # Get 3D bounding box for enhanced relation detection
+                bbox3d = self.bbox3d_dict[label]
                 detections_for_relations.append({
                     'label': label,
-                    'position_3d': tuple(centroid)  # Unique position for each object
+                    'position_3d': tuple(centroid),  # Unique position for each object
+                    'bbox3d': bbox3d  # 3D bounding box for inside/on_top_of detection
                 })
                 print(f"  Relation input for {label}: {len(obj_points)} points, centroid: {centroid}")
         

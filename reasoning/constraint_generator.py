@@ -205,13 +205,43 @@ class ConstraintGenerator:
         goal_text = goal or task_info.get('success_condition', '')
         actions_text = ", ".join(task_info.get('actions', []))
         
-        prompt_info = self.llm_prompter.prompts['constraint-generator']
-        user_prompt = prompt_info['template-user'].format(
+        # Get prompt info with error handling
+        try:
+            prompt_info = self.llm_prompter.prompts['constraint-generator']
+        except KeyError:
+            raise KeyError(f"Prompt 'constraint-generator' not found. Available prompts: {list(self.llm_prompter.prompts.keys())}")
+        
+        # Check if prompt_info is a dict
+        if not isinstance(prompt_info, dict):
+            raise TypeError(f"prompt_info is not a dict, got {type(prompt_info)}: {prompt_info}")
+        
+        # Check for required keys
+        if 'template-user' not in prompt_info:
+            raise KeyError(f"'template-user' not found in prompt_info. Available keys: {list(prompt_info.keys())}")
+        if 'template-system' not in prompt_info:
+            raise KeyError(f"'template-system' not found in prompt_info. Available keys: {list(prompt_info.keys())}")
+        
+        # Get template string
+        template_user = prompt_info['template-user']
+        if not isinstance(template_user, str):
+            raise TypeError(f"template-user is not a string, got {type(template_user)}: {template_user}")
+        
+        # Format the template with error handling
+        try:
+            user_prompt = template_user.format(
             task=task_name,
             actions=actions_text,
             scene_graph=scene_text,
             goal=goal_text
         )
+        except KeyError as e:
+            # Provide more context about the error
+            required_keys = {'task', 'actions', 'scene_graph', 'goal'}
+            raise KeyError(
+                f"Error formatting template-user: {e}. "
+                f"Template should use keys from: {required_keys}. "
+                f"Template preview (first 200 chars): {template_user[:200]}"
+            ) from e
         
         response, _ = self.llm_prompter.query(
             prompt_info['template-system'],
@@ -223,6 +253,220 @@ class ConstraintGenerator:
         constraints = self._parse_constraints(response)
         
         return constraints
+    
+    def generate_constraints_for_action(self, action: str, action_index: int, 
+                                       action_type: Optional[str] = None) -> List[Dict]:
+        """
+        Generate constraints for a SINGLE action (Action-centric method)
+        
+        This method implements the improved approach from improve4.md:
+        - Generate constraints for one action at a time
+        - Do NOT use final_scene_graph
+        - Bind action_index at generation time
+        - Use Action-local prompt (no full task context)
+        
+        Args:
+            action: Action string, e.g., "(put_in, Mug, CoffeeMachine)"
+            action_index: Index of the action in the sequence
+            action_type: Optional action type (pick_up, put_in, etc.)
+                        If None, will be inferred from action string
+        
+        Returns:
+            List of constraint dictionaries with action_index already bound
+        """
+        import re
+        
+        # Parse action to get type and arguments
+        if action_type is None:
+            # Extract action type from action string
+            match = re.match(r'\((\w+),', action)
+            if match:
+                action_type = match.group(1)
+            else:
+                # Fallback: try to infer from action string
+                action_lower = action.lower()
+                if 'pick_up' in action_lower or 'pickup' in action_lower:
+                    action_type = 'pick_up'
+                elif 'put_in' in action_lower:
+                    action_type = 'put_in'
+                elif 'put_on' in action_lower:
+                    action_type = 'put_on'
+                elif 'toggle_on' in action_lower:
+                    action_type = 'toggle_on'
+                elif 'toggle_off' in action_lower:
+                    action_type = 'toggle_off'
+                elif 'navigate' in action_lower:
+                    action_type = 'navigate_to_obj'
+                else:
+                    action_type = 'unknown'
+        
+        # Extract action arguments
+        match = re.findall(r'\(([^)]+)\)', action)
+        if match:
+            action_args = [arg.strip() for arg in match[0].split(',')]
+            # First element is action type, rest are objects
+            if len(action_args) > 1:
+                action_args = action_args[1:]  # Remove action type
+            else:
+                action_args = []
+        else:
+            action_args = []
+        
+        # Get template for this action type
+        template = ACTION_TEMPLATES.get(action_type)
+        if template is None:
+            # If no template, try LLM-based generation with action-local prompt
+            return self._generate_constraints_for_action_llm(action, action_index, action_type, action_args)
+        
+        # Generate constraints from template
+        constraints = []
+        constraint_id_base = f"C{action_index * 10}"  # Reserve IDs per action
+        
+        # Generate Preconditions
+        for idx, (predicate, template_args) in enumerate(template.get("pre", [])):
+            # Bind template arguments to actual action arguments
+            bound_args = self._bind_template_args(template_args, action_args)
+            if not bound_args:
+                continue
+            
+            # Build constraint
+            constraint = {
+                'id': f"{constraint_id_base}_PRE{idx+1}",
+                'type': 'precondition',
+                'template': f"{predicate}({', '.join(bound_args)})",
+                'description': self._generate_description(predicate, bound_args, 'precondition'),
+                'condition_expr': f"{predicate}({', '.join(bound_args)})",
+                'action': action,
+                'action_index': action_index,
+                'bound_action': action,
+                'severity': 'hard'
+            }
+            constraints.append(constraint)
+        
+        # Generate Postconditions
+        for idx, (predicate, template_args) in enumerate(template.get("post", [])):
+            # Bind template arguments to actual action arguments
+            bound_args = self._bind_template_args(template_args, action_args)
+            if not bound_args:
+                continue
+            
+            # Build constraint
+            constraint = {
+                'id': f"{constraint_id_base}_POST{idx+1}",
+                'type': 'postcondition',
+                'template': f"{predicate}({', '.join(bound_args)})",
+                'description': self._generate_description(predicate, bound_args, 'postcondition'),
+                'condition_expr': f"{predicate}({', '.join(bound_args)})",
+                'action': action,
+                'action_index': action_index,
+                'bound_action': action,
+                'severity': 'hard'
+            }
+            constraints.append(constraint)
+        
+        return constraints
+    
+    def _bind_template_args(self, template_args: List[str], action_args: List[str]) -> List[str]:
+        """Bind template arguments (X, Y, robot) to actual action arguments"""
+        bound = []
+        for template_arg in template_args:
+            if template_arg == "robot":
+                bound.append("Robot")
+            elif template_arg == "X" and len(action_args) > 0:
+                bound.append(action_args[0])
+            elif template_arg == "Y" and len(action_args) > 1:
+                bound.append(action_args[1])
+            elif template_arg in action_args:
+                bound.append(template_arg)
+        return bound
+    
+    def _generate_description(self, predicate: str, args: List[str], constraint_type: str) -> str:
+        """Generate human-readable description for a constraint"""
+        if predicate == "holding":
+            return f"Robot must be holding the {args[0]}"
+        elif predicate == "gripper_empty":
+            return "Robot gripper must be empty"
+        elif predicate == "reachable":
+            return f"{args[0]} must be reachable"
+        elif predicate == "container_open":
+            return f"{args[0]} must be open"
+        elif predicate == "container_empty":
+            return f"{args[0]} must be empty"
+        elif predicate == "inside":
+            return f"{args[0]} must be inside {args[1]}"
+        elif predicate == "on_top_of":
+            return f"{args[0]} must be on top of {args[1]}"
+        elif predicate == "toggled_on":
+            return f"{args[0]} must be toggled on"
+        elif predicate == "toggled_off":
+            return f"{args[0]} must be toggled off"
+        elif predicate == "filled":
+            return f"{args[0]} must be filled"
+        else:
+            return f"{predicate}({', '.join(args)})"
+    
+    def _generate_constraints_for_action_llm(self, action: str, action_index: int,
+                                            action_type: str, action_args: List[str]) -> List[Dict]:
+        """
+        Fallback: Use LLM to generate constraints for a single action
+        (Action-local prompt, no scene graph)
+        """
+        # Get action template if available
+        template = ACTION_TEMPLATES.get(action_type, {})
+        pre_templates = template.get("pre", [])
+        post_templates = template.get("post", [])
+        
+        # Build action-local prompt
+        pre_templates_str = ", ".join([f"{pred}({', '.join(args)})" for pred, args in pre_templates])
+        post_templates_str = ", ".join([f"{pred}({', '.join(args)})" for pred, args in post_templates])
+        
+        user_prompt = f"""Current Action: {action}
+Action Index: {action_index}
+Action Type: {action_type}
+Action Arguments: {', '.join(action_args)}
+
+Action Semantic Template:
+    Preconditions: {pre_templates_str or 'None'}
+    Postconditions: {post_templates_str or 'None'}
+
+Rules:
+- Generate constraints ONLY for this action
+- Do NOT reference future actions
+- Do NOT reference final goal state
+- Instantiate templates with actual object names from action arguments
+
+Output JSON format:
+{{
+  "constraints": [
+    {{
+      "id": "C1",
+      "type": "precondition",
+      "template": "holding(Mug)",
+      "description": "Robot must be holding the Mug",
+      "action_index": {action_index},
+      "action": "{action}"
+    }}
+  ]
+}}"""
+        
+        system_prompt = """You are a robot task analyzer. Generate constraints for a SINGLE action by 
+instantiating the provided action semantic template. Do NOT reference other actions or the final goal."""
+        
+        try:
+            response, _ = self.llm_prompter.query(
+                system_prompt,
+                user_prompt,
+                max_tokens=1000
+            )
+            constraints = self._parse_constraints(response)
+            # Ensure action_index is set
+            for constraint in constraints:
+                constraint['action_index'] = action_index
+                constraint['bound_action'] = action
+            return constraints
+        except Exception as e:
+            print(f"⚠️  LLM generation failed for action {action}: {e}")
+            return []
     
     def _parse_constraints(self, llm_response: str) -> List[Dict]:
         """

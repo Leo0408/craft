@@ -68,7 +68,7 @@ Rules:
 - Identify Preconditions (type: "pre") and Postconditions (type: "post").
 
 Example for `boilWater` (Step 8: put_on(Pot, StoveBurner-4)):
-- Constraint: {"template": "holding(Pot)", "type": "pre", "action": "put_on(Pot, StoveBurner-4)", "description": "Robot must be holding the pot"}
+- Constraint: {{"template": "holding(Pot)", "type": "pre", "action": "put_on(Pot, StoveBurner-4)", "description": "Robot must be holding the pot"}}
 
 Output the constraints in this JSON format:
 {{
