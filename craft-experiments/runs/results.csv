@@ -1,0 +1,3 @@
+attribution_correct,detected,detector,failure_injected,failure_step,failure_type,status,task,timestamp
+,False,BASELINE,False,,,SUCCESS,make_coffee,2026-01-06T01:37:28.493951
+True,True,CRAFT,True,3,MISSING_PRECONDITION,FAILURE_DETECTED,make_coffee,2026-01-06T01:37:28.493978

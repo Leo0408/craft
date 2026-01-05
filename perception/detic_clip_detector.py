@@ -297,28 +297,44 @@ class DeticClipDetector:
                     # Register CenterNet proposal generator (which is actually FCOS)
                     # This is needed because DETIC configs use NAME: "CenterNet" but it's not registered by default
                     # DETIC uses FCOS as the proposal generator but calls it "CenterNet" in configs
+                    # IMPORTANT: We avoid importing adet.modeling.fcos directly to prevent registration conflicts
                     try:
                         from detectron2.modeling.proposal_generator.build import PROPOSAL_GENERATOR_REGISTRY
-                        from adet.modeling.fcos import FCOS
                         
                         # Check if CenterNet is already registered
                         if "CenterNet" not in PROPOSAL_GENERATOR_REGISTRY._obj_map:
-                            # Register FCOS as "CenterNet" (DETIC uses FCOS as CenterNet proposal generator)
-                            # Create a wrapper class and register it, then manually add to registry
-                            class CenterNet(FCOS):
-                                pass
-                            CenterNet.__name__ = "CenterNet"
-                            PROPOSAL_GENERATOR_REGISTRY.register(CenterNet)
-                            # Manually add FCOS to registry with "CenterNet" name
-                            PROPOSAL_GENERATOR_REGISTRY._obj_map["CenterNet"] = FCOS
-                            print("✅ Registered CenterNet proposal generator (using FCOS)")
+                            # Check if FCOS is already registered (it might be, without importing adet)
+                            if "FCOS" in PROPOSAL_GENERATOR_REGISTRY._obj_map:
+                                # FCOS is already registered, just alias it as CenterNet
+                                FCOS_class = PROPOSAL_GENERATOR_REGISTRY._obj_map["FCOS"]
+                                PROPOSAL_GENERATOR_REGISTRY._obj_map["CenterNet"] = FCOS_class
+                                print("✅ Registered CenterNet proposal generator (aliased from FCOS)")
+                            else:
+                                # FCOS is not registered, try to import it carefully
+                                # Use a try-except to handle registration conflicts gracefully
+                                try:
+                                    from adet.modeling.fcos import FCOS
+                                    FCOS_class = PROPOSAL_GENERATOR_REGISTRY._obj_map.get("FCOS", FCOS)
+                                    PROPOSAL_GENERATOR_REGISTRY._obj_map["CenterNet"] = FCOS_class
+                                    print("✅ Registered CenterNet proposal generator (using FCOS)")
+                                except AssertionError as reg_conflict:
+                                    if 'already registered' in str(reg_conflict):
+                                        # Registration conflict - FCOS might have been partially loaded
+                                        # Try to get FCOS from registry if it exists
+                                        if "FCOS" in PROPOSAL_GENERATOR_REGISTRY._obj_map:
+                                            FCOS_class = PROPOSAL_GENERATOR_REGISTRY._obj_map["FCOS"]
+                                            PROPOSAL_GENERATOR_REGISTRY._obj_map["CenterNet"] = FCOS_class
+                                            print("✅ Registered CenterNet proposal generator (from registry)")
+                                        else:
+                                            print(f"⚠️  Warning: Could not register CenterNet due to registration conflict")
+                                    else:
+                                        raise
                         else:
                             print("ℹ️  CenterNet proposal generator already registered")
                     except Exception as reg_err:
                         print(f"⚠️  Warning: Could not register CenterNet: {reg_err}")
-                        import traceback
-                        traceback.print_exc()
                         # Don't fail completely - maybe it's already registered or we can continue
+                        # The registration might happen later when the config is loaded
                     
                     # Import detic.modeling to register CustomRCNN meta architecture
                     # This is needed for DETIC to work properly
@@ -428,7 +444,103 @@ class DeticClipDetector:
                     cfg.MODEL.ROI_HEADS.NMS_THRESH_TEST = 0.5
                     cfg.MODEL.DEVICE = self.device
                     
-                    self.detic_model = DefaultPredictor(cfg)
+                    # CRITICAL: Set ZEROSHOT_WEIGHT_PATH to 'rand' to avoid loading metadata file during initialization
+                    # This allows the model to be initialized without the metadata file
+                    # The classifier will be set up later via reset_cls_test when needed
+                    cfg.MODEL.ROI_BOX_HEAD.ZEROSHOT_WEIGHT_PATH = 'rand'
+                    cfg.MODEL.ROI_HEADS.ONE_CLASS_PER_PROPOSAL = True
+                    print("✅ Set ZEROSHOT_WEIGHT_PATH = 'rand' (will load classifier later via reset_cls_test)")
+                    
+                    # CRITICAL: Fix metadata paths to use absolute paths (relative to DETIC root)
+                    # DETIC config uses relative paths that are relative to DETIC root directory
+                    # We need to convert them to absolute paths so they work regardless of current working directory
+                    if detic_root:
+                        # Fix CAT_FREQ_PATH (used by federated loss, if enabled)
+                        if hasattr(cfg.MODEL.ROI_BOX_HEAD, 'CAT_FREQ_PATH'):
+                            cat_freq_path = cfg.MODEL.ROI_BOX_HEAD.CAT_FREQ_PATH
+                            if not os.path.isabs(cat_freq_path):
+                                cat_freq_path_abs = os.path.join(detic_root, cat_freq_path)
+                                if os.path.exists(cat_freq_path_abs):
+                                    cfg.MODEL.ROI_BOX_HEAD.CAT_FREQ_PATH = cat_freq_path_abs
+                                    print(f"✅ Fixed CAT_FREQ_PATH to absolute path: {cat_freq_path_abs}")
+                        
+                        # Fix ZEROSHOT_WEIGHT_PATH (if it's not 'rand')
+                        if hasattr(cfg.MODEL.ROI_BOX_HEAD, 'ZEROSHOT_WEIGHT_PATH'):
+                            zs_weight_path = cfg.MODEL.ROI_BOX_HEAD.ZEROSHOT_WEIGHT_PATH
+                            if zs_weight_path != 'rand' and not os.path.isabs(zs_weight_path):
+                                zs_weight_path_abs = os.path.join(detic_root, zs_weight_path)
+                                if os.path.exists(zs_weight_path_abs):
+                                    cfg.MODEL.ROI_BOX_HEAD.ZEROSHOT_WEIGHT_PATH = zs_weight_path_abs
+                    
+                    # Add missing DEBUG config fields (required by detic_fast_rcnn.py)
+                    # These must be set BEFORE DefaultPredictor is created
+                    if not hasattr(cfg, 'DEBUG'):
+                        cfg.DEBUG = False
+                    if not hasattr(cfg, 'SAVE_DEBUG'):
+                        cfg.SAVE_DEBUG = False
+                    if not hasattr(cfg, 'IS_DEBUG'):
+                        cfg.IS_DEBUG = False
+                    print("✅ Added DEBUG fields (DEBUG, SAVE_DEBUG, IS_DEBUG)")
+                    
+                    # CRITICAL: Temporarily change working directory to DETIC root when creating DefaultPredictor
+                    # This ensures that any relative paths in the config are resolved correctly
+                    # This is necessary because DETIC may access metadata files during initialization
+                    original_cwd = os.getcwd()
+                    try:
+                        if detic_root and os.path.exists(detic_root):
+                            os.chdir(detic_root)
+                            print(f"📁 Temporarily changed working directory to DETIC root: {detic_root}")
+                        
+                        self.detic_model = DefaultPredictor(cfg)
+                    finally:
+                        # Always restore original working directory
+                        os.chdir(original_cwd)
+                        if detic_root and os.path.exists(detic_root):
+                            print(f"📁 Restored working directory to: {original_cwd}")
+                    
+                    # CRITICAL: Set up default LVIS classifier using reset_cls_test
+                    # This MUST be called after DefaultPredictor creation, even for default vocabulary
+                    # Official DETIC code always calls reset_cls_test (see Detic/predictor.py line 68)
+                    try:
+                        from detic.modeling.utils import reset_cls_test
+                        from detectron2.data import MetadataCatalog
+                        
+                        # Set up default LVIS classifier (will be used when not using custom vocabulary)
+                        BUILDIN_CLASSIFIER = {
+                            'lvis': 'datasets/metadata/lvis_v1_clip_a+cname.npy',
+                        }
+                        BUILDIN_METADATA_PATH = {
+                            'lvis': 'lvis_v1_val',
+                        }
+                        
+                        # Use LVIS as default vocabulary
+                        metadata = MetadataCatalog.get(BUILDIN_METADATA_PATH['lvis'])
+                        classifier_path = BUILDIN_CLASSIFIER['lvis']
+                        
+                        # Build full path relative to DETIC root
+                        classifier_full_path = None
+                        if detic_root:
+                            classifier_full_path = os.path.join(detic_root, classifier_path)
+                            if not os.path.exists(classifier_full_path):
+                                print(f"⚠️  Classifier file not found at {classifier_full_path}, model will use 'rand' weights")
+                                classifier_full_path = None
+                        
+                        if classifier_full_path and os.path.exists(classifier_full_path):
+                            num_classes = len(metadata.thing_classes)
+                            # Ensure we use absolute path for reset_cls_test
+                            reset_cls_test(self.detic_model.model, classifier_full_path, num_classes)
+                            print(f"✅ Set up default LVIS classifier ({num_classes} classes)")
+                            print(f"   Classifier path: {classifier_full_path}")
+                        else:
+                            print("⚠️  LVIS classifier file not found, model will use 'rand' weights (CLIP filtering will still work)")
+                            if detic_root:
+                                print(f"   Expected path: {os.path.join(detic_root, classifier_path)}")
+                    except Exception as reset_err:
+                        print(f"⚠️  Warning: Could not set up default LVIS classifier: {reset_err}")
+                        print("   Model will use 'rand' weights (CLIP filtering will still work)")
+                        import traceback
+                        traceback.print_exc()
+                    
                     print("✅ DETIC model loaded")
                 except ImportError as import_err:
                     # Fallback: Use detectron2 with custom vocabulary
@@ -525,6 +637,89 @@ class DeticClipDetector:
                 expanded.append("coffee maker")
                 expanded.append("coffee machine")
         return list(set(expanded))  # Remove duplicates
+    
+    def _extract_core_nouns(self, object_list: List[str]) -> List[str]:
+        """
+        从对象描述中提取核心名词（用于DETIC检测）
+        
+        例如：
+        - "purple cup" -> "cup"
+        - "blue cup with handle" -> "cup"
+        - "coffee machine" -> "coffee machine"
+        - "table on the left of sink" -> "table"
+        
+        Args:
+            object_list: 对象描述列表（可能包含颜色、属性、关系等）
+            
+        Returns:
+            核心名词列表（去重）
+        """
+        core_nouns = []
+        
+        # 常见的颜色词
+        color_words = {
+            'red', 'blue', 'green', 'yellow', 'purple', 'white', 'black', 
+            'brown', 'orange', 'pink', 'gray', 'grey', 'cyan', 'magenta'
+        }
+        
+        # 常见的关系词（在检测时应该去掉）
+        relation_words = {
+            'on', 'in', 'at', 'by', 'with', 'from', 'to', 'of', 'the', 'left', 
+            'right', 'top', 'bottom', 'near', 'beside', 'behind', 'front', 'above', 'below'
+        }
+        
+        # 常见的属性词（在检测时应该去掉）
+        attribute_words = {
+            'with', 'without', 'small', 'large', 'big', 'little', 'handle', 'button', 'knob'
+        }
+        
+        for obj_desc in object_list:
+            obj_lower = obj_desc.lower().strip()
+            
+            # 处理关系描述：提取第一个名词
+            # 如 "table on the left of sink" -> "table"
+            if any(rel in obj_lower for rel in [' on ', ' of ', ' near ', ' beside ', ' left of ', ' right of ']):
+                # 提取第一个单词作为核心名词
+                words = obj_lower.split()
+                first_word = words[0] if words else obj_desc
+                if first_word not in relation_words and first_word not in color_words:
+                    core_nouns.append(first_word)
+                continue
+            
+            # 处理属性描述：移除"with"及其后的内容
+            # 如 "cup with handle" -> "cup"
+            if ' with ' in obj_lower:
+                obj_lower = obj_lower.split(' with ')[0].strip()
+            
+            # 移除颜色词（如果出现在开头）
+            words = obj_lower.split()
+            if len(words) > 0 and words[0] in color_words:
+                # 移除第一个词（颜色）
+                words = words[1:]
+            
+            if len(words) > 0:
+                # 取剩余词作为核心名词（可能是复合名词，如 "coffee machine"）
+                core_noun = ' '.join(words)
+                # 移除常见的属性词
+                core_noun_words = core_noun.split()
+                core_noun_words = [w for w in core_noun_words if w not in attribute_words]
+                core_noun = ' '.join(core_noun_words).strip()
+                if core_noun:
+                    core_nouns.append(core_noun)
+            else:
+                # 如果全部被移除，使用原始描述
+                core_nouns.append(obj_desc)
+        
+        # 去重，保持顺序
+        seen = set()
+        unique_nouns = []
+        for noun in core_nouns:
+            noun_lower = noun.lower()
+            if noun_lower not in seen:
+                seen.add(noun_lower)
+                unique_nouns.append(noun)
+        
+        return unique_nouns
     
     def _filter_with_clip(self, 
                          detections: List[Dict], 
@@ -796,7 +991,17 @@ class DeticClipDetector:
             # RGB to BGR for DETIC
             img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
         
-        # Run DETIC
+        # CRITICAL: Extract core nouns from object descriptions for DETIC detection
+        # DETIC should only detect simple nouns, not attributes/relations
+        # Example: "purple cup" -> "cup", "table on the left of sink" -> "table"
+        core_nouns = self._extract_core_nouns(object_list)
+        
+        print(f"📋 Original object descriptions: {object_list}")
+        print(f"🔍 Extracted core nouns for DETIC: {core_nouns}")
+        print(f"💡 DETIC will detect using LVIS vocabulary (core nouns: {core_nouns})")
+        print(f"💡 CLIP will match attributes/relations for: {object_list}")
+        
+        # Run DETIC (uses default LVIS vocabulary, core_nouns are just for reference/logging)
         outputs = self.detic_model(img_array)
         
         # Parse DETIC outputs
@@ -829,9 +1034,18 @@ class DeticClipDetector:
             }
             detections.append(detection)
         
-        # Filter with CLIP
+        # CLIP filtering: Use ORIGINAL object_list (with attributes/relations)
+        # This allows CLIP to match attributes like "purple cup" vs detected "cup"
+        # CLIP understands semantic similarity, so it can match:
+        # - "purple cup" to detected "cup"
+        # - "blue cup with handle" to detected "cup"
+        # - etc.
+        # Note: Relations like "table on the left of sink" should be handled in Scene Graph layer
         if self.clip_available and self.clip_model is not None:
+            print(f"🔍 Applying CLIP filtering to {len(detections)} detections...")
+            print(f"   Matching against original descriptions: {object_list}")
             detections = self._filter_with_clip(detections, object_list, rgb_image)
+            print(f"✅ CLIP filtering complete")
         
         # Filter by object_list (if CLIP not available, use simple matching)
         if not self.clip_available:

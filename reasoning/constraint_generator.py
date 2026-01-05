@@ -16,6 +16,36 @@ from .llm_prompter import LLMPrompter
 # Template-based Constraint Generation (improve3.md scheme)
 # ============================================================================
 
+# ============================================================================
+# Action Classification (分层设计)
+# ============================================================================
+
+# A类：纯导航/定位动作（可安全忽略，不生成约束）
+NAVIGATION_ACTIONS = {
+    "navigate_to_obj",
+    "navigate",
+    "look_at",
+    "turn_to",
+    "move_to"
+}
+
+# B类：状态切换动作（必须建模，生成状态变量约束）
+STATE_CHANGE_ACTIONS = {
+    "toggle_on",
+    "toggle_off",
+    "open",
+    "close"
+}
+
+# C类：语义复合动作（可由 LLM 辅助生成保守约束）
+SEMANTIC_COMPOSITE_ACTIONS = {
+    "pour",
+    "wash",
+    "heat",
+    "clean",
+    "fill"
+}
+
 # Action Semantic Templates - 动作语义模板库
 ACTION_TEMPLATES = {
     "pick_up": {
@@ -25,7 +55,8 @@ ACTION_TEMPLATES = {
         ],
         "post": [
             ("holding", ["X"])
-        ]
+        ],
+        "category": "manipulation"
     },
     "put_in": {
         "pre": [
@@ -35,7 +66,8 @@ ACTION_TEMPLATES = {
         ],
         "post": [
             ("inside", ["X", "Y"])
-        ]
+        ],
+        "category": "manipulation"
     },
     "put_on": {
         "pre": [
@@ -43,27 +75,49 @@ ACTION_TEMPLATES = {
         ],
         "post": [
             ("on_top_of", ["X", "Y"])
-        ]
+        ],
+        "category": "manipulation"
     },
     "toggle_on": {
         "pre": [
-            ("reachable", ["Y"])
+            ("reachable", ["X"])
         ],
         "post": [
-            ("toggled_on", ["Y"])
-        ]
+            ("toggled_on", ["X"])
+        ],
+        "category": "state_change"
     },
     "toggle_off": {
+        "pre": [
+            ("reachable", ["X"])
+        ],
+        "post": [
+            ("toggled_off", ["X"])
+        ],
+        "category": "state_change"
+    },
+    "open": {
         "pre": [
             ("reachable", ["Y"])
         ],
         "post": [
-            ("toggled_off", ["Y"])
-        ]
+            ("container_open", ["Y"])
+        ],
+        "category": "state_change"
+    },
+    "close": {
+        "pre": [
+            ("reachable", ["Y"])
+        ],
+        "post": [
+            ("container_closed", ["Y"])
+        ],
+        "category": "state_change"
     },
     "navigate_to_obj": {
         "pre": [],
-        "post": []
+        "post": [],
+        "category": "navigation"
     },
     "pour": {
         "pre": [
@@ -71,7 +125,8 @@ ACTION_TEMPLATES = {
         ],
         "post": [
             ("filled", ["Y"])
-        ]
+        ],
+        "category": "semantic_composite"
     }
 }
 
@@ -297,8 +352,19 @@ class ConstraintGenerator:
                     action_type = 'toggle_off'
                 elif 'navigate' in action_lower:
                     action_type = 'navigate_to_obj'
+                elif 'open' in action_lower and 'container' not in action_lower:
+                    action_type = 'open'
+                elif 'close' in action_lower and 'container' not in action_lower:
+                    action_type = 'close'
                 else:
                     action_type = 'unknown'
+        
+        # Classify action type
+        action_category = self._classify_action(action_type)
+        
+        # A类：导航动作 - 不生成约束（可安全忽略）
+        if action_category == "navigation":
+            return []  # 返回空列表，不生成约束
         
         # Extract action arguments
         match = re.findall(r'\(([^)]+)\)', action)
@@ -314,9 +380,19 @@ class ConstraintGenerator:
         
         # Get template for this action type
         template = ACTION_TEMPLATES.get(action_type)
+        
+        # B类：状态切换动作 - 如果没有模板，生成基本状态变量约束
+        if template is None and action_category == "state_change":
+            return self._generate_state_variable_constraints(action, action_index, action_type, action_args)
+        
+        # C类：语义复合动作 - 使用受限的 LLM 辅助生成
+        if template is None and action_category == "semantic_composite":
+            return self._generate_constraints_for_action_llm_constrained(action, action_index, action_type, action_args)
+        
+        # 完全未知的动作类型
         if template is None:
-            # If no template, try LLM-based generation with action-local prompt
-            return self._generate_constraints_for_action_llm(action, action_index, action_type, action_args)
+            # 对于完全未知的动作，返回空列表（不生成约束）
+            return []
         
         # Generate constraints from template
         constraints = []
@@ -366,16 +442,203 @@ class ConstraintGenerator:
         
         return constraints
     
+    def _classify_action(self, action_type: str) -> str:
+        """
+        分类动作类型
+        
+        Returns:
+            "navigation" | "state_change" | "semantic_composite" | "manipulation" | "unknown"
+        """
+        if action_type in NAVIGATION_ACTIONS:
+            return "navigation"
+        elif action_type in STATE_CHANGE_ACTIONS:
+            return "state_change"
+        elif action_type in SEMANTIC_COMPOSITE_ACTIONS:
+            return "semantic_composite"
+        elif action_type in ACTION_TEMPLATES:
+            template = ACTION_TEMPLATES.get(action_type, {})
+            return template.get("category", "manipulation")
+        else:
+            return "unknown"
+    
+    def _generate_state_variable_constraints(self, action: str, action_index: int,
+                                             action_type: str, action_args: List[str]) -> List[Dict]:
+        """
+        为状态切换动作生成基本状态变量约束（B类动作）
+        
+        例如：toggle_on(Faucet) → POST: Faucet.state == ON
+        """
+        if not action_args:
+            return []
+        
+        obj_name = action_args[0]
+        constraints = []
+        constraint_id_base = f"C{action_index * 10}"
+        
+        # 根据动作类型生成对应的状态变量约束
+        if action_type == "toggle_on":
+            constraint = {
+                'id': f"{constraint_id_base}_POST1",
+                'type': 'postcondition',
+                'template': f"toggled_on({obj_name})",
+                'description': f"{obj_name} must be toggled on",
+                'condition_expr': f"node.attributes.get('isToggled', False)",
+                'action': action,
+                'action_index': action_index,
+                'bound_action': action,
+                'severity': 'hard'
+            }
+            constraints.append(constraint)
+        elif action_type == "toggle_off":
+            constraint = {
+                'id': f"{constraint_id_base}_POST1",
+                'type': 'postcondition',
+                'template': f"toggled_off({obj_name})",
+                'description': f"{obj_name} must be toggled off",
+                'condition_expr': f"not node.attributes.get('isToggled', False)",
+                'action': action,
+                'action_index': action_index,
+                'bound_action': action,
+                'severity': 'hard'
+            }
+            constraints.append(constraint)
+        elif action_type == "open":
+            constraint = {
+                'id': f"{constraint_id_base}_POST1",
+                'type': 'postcondition',
+                'template': f"container_open({obj_name})",
+                'description': f"{obj_name} must be open",
+                'condition_expr': f"node.attributes.get('isOpen', False)",
+                'action': action,
+                'action_index': action_index,
+                'bound_action': action,
+                'severity': 'hard'
+            }
+            constraints.append(constraint)
+        elif action_type == "close":
+            constraint = {
+                'id': f"{constraint_id_base}_POST1",
+                'type': 'postcondition',
+                'template': f"container_closed({obj_name})",
+                'description': f"{obj_name} must be closed",
+                'condition_expr': f"not node.attributes.get('isOpen', True)",
+                'action': action,
+                'action_index': action_index,
+                'bound_action': action,
+                'severity': 'hard'
+            }
+            constraints.append(constraint)
+        
+        return constraints
+    
+    def _generate_constraints_for_action_llm_constrained(self, action: str, action_index: int,
+                                                         action_type: str, action_args: List[str]) -> List[Dict]:
+        """
+        受限的 LLM 辅助生成（C类动作）
+        
+        LLM 只从预定义的约束类型中选择，不能自由创造规则
+        """
+        # 预定义的约束类型选项
+        constraint_schema = [
+            "1. State change (on/off, clean/dirty, open/closed)",
+            "2. Containment relation (inside, on_top_of)",
+            "3. Spatial relation (near, in_contact)",
+            "4. No constraint needed"
+        ]
+        
+        user_prompt = f"""Given an action: {action}
+
+Select applicable constraints from the following schema (output only the numbers):
+{chr(10).join(constraint_schema)}
+
+Rules:
+- You can only select from the listed constraint types
+- Do NOT create new constraint types
+- Output format: "Selected: 1, 2" or "Selected: 4" (if no constraint needed)"""
+        
+        system_prompt = """You are a constraint type selector. Your task is to select constraint types from a predefined schema for a given action. You cannot create new constraint types."""
+        
+        try:
+            response, _ = self.llm_prompter.query(
+                system_prompt,
+                user_prompt,
+                max_tokens=100
+            )
+            
+            # 解析 LLM 的选择
+            selected_types = []
+            if "Selected:" in response:
+                parts = response.split("Selected:")[1].strip()
+                selected_types = [int(x.strip()) for x in parts.split(",") if x.strip().isdigit()]
+            
+            # 如果选择了 4（不需要约束），返回空列表
+            if 4 in selected_types:
+                return []
+            
+            # 根据选择的类型生成约束
+            constraints = []
+            constraint_id_base = f"C{action_index * 10}"
+            
+            if 1 in selected_types:  # State change
+                # 为状态变化动作生成基本状态变量约束
+                if action_args:
+                    obj_name = action_args[0]
+                    constraint = {
+                        'id': f"{constraint_id_base}_POST1",
+                        'type': 'postcondition',
+                        'template': f"state_changed({obj_name})",
+                        'description': f"{obj_name} state changed",
+                        'condition_expr': f"node.attributes.get('state') is not None",
+                        'action': action,
+                        'action_index': action_index,
+                        'bound_action': action,
+                        'severity': 'hard'
+                    }
+                    constraints.append(constraint)
+            
+            if 2 in selected_types:  # Containment relation
+                if len(action_args) >= 2:
+                    constraint = {
+                        'id': f"{constraint_id_base}_POST2",
+                        'type': 'postcondition',
+                        'template': f"inside({action_args[0]}, {action_args[1]})",
+                        'description': f"{action_args[0]} must be inside {action_args[1]}",
+                        'condition_expr': f"has_edge('{action_args[0]}', '{action_args[1]}', 'inside')",
+                        'action': action,
+                        'action_index': action_index,
+                        'bound_action': action,
+                        'severity': 'hard'
+                    }
+                    constraints.append(constraint)
+            
+            return constraints
+            
+        except Exception as e:
+            # 如果 LLM 调用失败，返回空列表（保守策略）
+            return []
+    
     def _bind_template_args(self, template_args: List[str], action_args: List[str]) -> List[str]:
-        """Bind template arguments (X, Y, robot) to actual action arguments"""
+        """
+        Bind template arguments (X, Y, robot) to actual action arguments
+        
+        Binding rules:
+        - "robot" -> "Robot"
+        - "X" -> action_args[0] (first argument)
+        - "Y" -> action_args[1] if exists, else action_args[0] (fallback to first)
+        - Direct match if template_arg is in action_args
+        """
         bound = []
         for template_arg in template_args:
             if template_arg == "robot":
                 bound.append("Robot")
             elif template_arg == "X" and len(action_args) > 0:
                 bound.append(action_args[0])
-            elif template_arg == "Y" and len(action_args) > 1:
-                bound.append(action_args[1])
+            elif template_arg == "Y":
+                # Y can be the second argument, or fallback to first if only one argument
+                if len(action_args) > 1:
+                    bound.append(action_args[1])
+                elif len(action_args) > 0:
+                    bound.append(action_args[0])  # Fallback: use first argument for single-arg actions
             elif template_arg in action_args:
                 bound.append(template_arg)
         return bound

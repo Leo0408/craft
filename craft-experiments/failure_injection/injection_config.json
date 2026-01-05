@@ -1,0 +1,12 @@
+{
+  "make_coffee": [
+    {
+      "type": "MISSING_PRECONDITION",
+      "step": 3
+    },
+    {
+      "type": "PHYSICAL_IMPOSSIBLE",
+      "object": "coffee_machine"
+    }
+  ]
+}

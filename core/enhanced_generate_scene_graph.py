@@ -146,41 +146,44 @@ def generate_scene_graph_from_event_enhanced(
                             break
         
         # Step 3: Add on_top_of relations based on position (for objects not in containers)
+        # Using hybrid method: metadata first, then position, then point cloud
+        from .enhanced_scene_graph_utils import determine_spatial_relation_hybrid
+        
         for obj in objects:
             node = sg.get_node(obj.get('name', 'unknown'))
-            if not node or not node.position:
+            if not node:
                 continue
             
-            # Skip if already in container
+            # Skip if already determined by metadata (Step 2)
             if obj.get('parentReceptacles'):
                 continue
             
-            obj_pos = node.position
-            
-            # Check if on top of other objects
+            # Check if on top of other objects using hybrid method
             for other_obj in objects:
                 if obj.get('objectId') == other_obj.get('objectId'):
                     continue
                 
                 other_node = sg.get_node(other_obj.get('name', 'unknown'))
-                if not other_node or not other_node.position:
+                if not other_node:
                     continue
                 
-                other_pos = other_node.position
-                other_type = other_obj.get('objectType', '').lower()
+                # Skip if relation already exists
+                edge_key = (node.name, other_node.name)
+                if edge_key in sg.edges:
+                    continue
                 
-                # Calculate spatial relationship
-                z_diff = obj_pos[2] - other_pos[2]
-                horizontal_dist = ((obj_pos[0] - other_pos[0])**2 + (obj_pos[1] - other_pos[1])**2)**0.5
+                # Use hybrid method to determine relation
+                relation_result = determine_spatial_relation_hybrid(
+                    obj, other_obj, node, other_node, use_point_cloud
+                )
                 
-                # Dynamic surface type detection
-                is_surface = any(kw in other_type for kw in ['countertop', 'table', 'stoveburner', 'burner', 'sink'])
-                
-                if (0.05 < z_diff < 0.5 and horizontal_dist < 0.2 and is_surface):
-                    edge_key = (node.name, other_node.name)
-                    existing_edge = sg.edges.get(edge_key)
-                    if not existing_edge or existing_edge.edge_type != 'inside':
-                        sg.add_edge(Edge(node, other_node, "on_top_of"))
+                if relation_result:
+                    rel_type, confidence = relation_result
+                    # Add relation if confidence is reasonable
+                    # Metadata-based relations (confidence=1.0) should already be added in Step 2
+                    # This step handles position-based and point cloud-based relations
+                    if confidence >= 0.75:  # Only add medium to high confidence relations
+                        sg.add_edge(Edge(node, other_node, rel_type))
         
         # Step 4: Add rich spatial relations (above, below, blocking, left_of, right_of)
         if use_rich_relations:

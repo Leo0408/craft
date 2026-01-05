@@ -300,8 +300,28 @@ class MDETRDetector:
                     outputs = self.model(img, [prompt])
                     
                     # Get predictions
-                    probas = 1 - outputs['pred_logits'].softmax(-1)[0, :, -1].cpu()
-                    max_prob = probas.max().item() if len(probas) > 0 else 0.0
+                    pred_logits = outputs['pred_logits']
+                    if pred_logits is None or pred_logits.numel() == 0:
+                        print(f"    ⚠️  Prompt '{prompt}': model returned empty outputs")
+                        continue
+                    
+                    # Compute probabilities
+                    softmax_logits = pred_logits.softmax(-1)
+                    probas = 1 - softmax_logits[0, :, -1].cpu()
+                    
+                    # Check for NaN values
+                    if torch.isnan(probas).any():
+                        print(f"    ⚠️  Prompt '{prompt}': model outputs contain NaN values (model may not be loaded correctly)")
+                        continue
+                    
+                    if len(probas) == 0:
+                        max_prob = 0.0
+                    else:
+                        max_prob = probas.max().item()
+                        if np.isnan(max_prob) or np.isinf(max_prob):
+                            print(f"    ⚠️  Prompt '{prompt}': max_prob is NaN/Inf (model may not be loaded correctly)")
+                            continue
+                    
                     keep = (probas > self.threshold).cpu()
                     
                     # Always print debugging info to help diagnose issues
@@ -385,8 +405,6 @@ class MDETRDetector:
             if best_detection is not None:
                 print(f"  ✅ Best detection for '{obj_name}': confidence={best_confidence:.3f}, prompt='{best_prompt}'")
                 detections.append(best_detection)
-            else:
-                print(f"  ❌ No detections found for '{obj_name}' with any prompt variation")
                 
                 # Also try to get all detections above threshold (not just best)
                 # This allows detecting multiple instances
@@ -434,6 +452,8 @@ class MDETRDetector:
                             detections.append(detection)
                 except:
                     pass  # If getting multiple detections fails, just use the best one
+            else:
+                print(f"  ❌ No detections found for '{obj_name}' with any prompt variation")
         
         return detections
     

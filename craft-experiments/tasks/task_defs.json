@@ -1,0 +1,60 @@
+{
+  "make_coffee": {
+    "scene": "FloorPlan16",
+    "object_list": [
+      "Mug",
+      "CoffeeMachine",
+      "Sink",
+      "CounterTop"
+    ],
+    "actions": [
+      "navigate_to_obj, Mug",
+      "pick_up, Mug",
+      "navigate_to_obj, CoffeeMachine",
+      "put_in, CoffeeMachine, Mug",
+      "toggle_on, CoffeeMachine"
+    ],
+    "success_condition": "a mug filled with coffee is on top of the countertop"
+  },
+  "make_tea": {
+    "scene": "FloorPlan16",
+    "object_list": [
+      "Mug",
+      "Kettle",
+      "Sink",
+      "CounterTop"
+    ],
+    "actions": [
+      "navigate_to_obj, Kettle",
+      "pick_up, Kettle",
+      "navigate_to_obj, Sink",
+      "put_on, SinkBasin, Kettle",
+      "toggle_on, Faucet",
+      "toggle_off, Faucet",
+      "pick_up, Kettle",
+      "navigate_to_obj, Mug",
+      "put_in, Mug, Kettle"
+    ],
+    "success_condition": "a mug filled with water is on the countertop"
+  },
+  "clean_mug": {
+    "scene": "FloorPlan16",
+    "object_list": [
+      "Mug",
+      "Sink",
+      "CounterTop"
+    ],
+    "actions": [
+      "navigate_to_obj, Mug",
+      "pick_up, Mug",
+      "navigate_to_obj, Sink",
+      "put_on, SinkBasin, Mug",
+      "toggle_on, Faucet",
+      "toggle_off, Faucet",
+      "pick_up, Mug",
+      "navigate_to_obj, CounterTop",
+      "put_on, CounterTop, Mug"
+    ],
+    "success_condition": "a clean mug is on top of the countertop"
+  }
+}

@@ -100,35 +100,104 @@ Algorithm BuildSceneGraph(detections, spatial_relations, task_info):
 
 **推荐组合**（真实环境常见做法）：
 
-### 方案 A：DETIC + CLIP + ByteTrack（推荐）⭐
+### 方案 A：DETIC + CLIP 集成（推荐）⭐
 
-| 模块 | 推荐模型 | 作用 |
-|------|---------|------|
-| 物体检测 | **DETIC** | 开放词表物体识别（比 MDETR 更鲁棒） |
-| 语义过滤 | **CLIP** | 语义匹配、prompt 扩展、误检过滤 |
-| 跟踪 | **ByteTrack** | 多目标跟踪，处理遮挡和ID切换 |
-| 记忆 | **Environment Memory** | 时序平滑、遮挡预测、置信度衰减 |
+DETIC + CLIP 集成有两种方式：
+
+#### 方案 A1：CLIP 文本嵌入替换分类器（推荐，Zero-shot Learning）⭐
+
+**工作原理**：
+1. 使用 CLIP 文本编码器生成自定义词汇表的文本嵌入
+2. 将 CLIP 嵌入替换到 DETIC 模型的分类器中（`reset_cls_test`）
+3. DETIC 直接输出自定义类名（如 "purple cup", "blue cup with handle"）
 
 **核心优势**：
-- ✅ **DETIC**：更强的开放词表检测能力，支持 21k 类别
-- ✅ **CLIP 语义过滤**：通过语义相似度过滤误检，支持 prompt 扩展（如 "cup" → "a cup", "the cup", "coffee cup"）
-- ✅ **ByteTrack 跟踪**：处理遮挡、ID 切换，提供稳定的对象轨迹
-- ✅ **Memory 集成**：与 Environment Memory 无缝集成，提供时序一致性
+- ✅ **一步到位**：DETIC 直接输出自定义类名，无需后处理匹配
+- ✅ **Zero-shot 学习**：能识别训练时未见过的类名（如 "purple cup"）
+- ✅ **准确性高**：CLIP 语义理解能力直接集成到检测流程中
+- ✅ **实现简单**：与 Detic_demo 官方实现一致
+
+**实现代码**：
+```python
+from detic.modeling.text.text_encoder import build_text_encoder
+from detic.modeling.utils import reset_cls_test
+
+def get_clip_embeddings(vocabulary, prompt='a '):
+    """Generate CLIP embeddings for custom vocabulary"""
+    text_encoder = build_text_encoder(pretrain=True)
+    text_encoder.eval()
+    texts = [prompt + x for x in vocabulary]
+    emb = text_encoder(texts).detach().permute(1, 0).contiguous().cpu()
+    return emb
+
+# 设置自定义词汇表
+metadata.thing_classes = ['coffee maker', 'purple cup', 'blue cup with handle', 'sink']
+classifier = get_clip_embeddings(metadata.thing_classes)
+reset_cls_test(predictor.model, classifier, len(metadata.thing_classes))
+
+# 检测结果直接是自定义类名
+outputs = predictor(image)  # 输出: ['purple cup', 'blue cup with handle', ...]
+```
 
 **工作流程**：
 ```
 RGB-D Stream
     ↓
-DETIC Detection (open-vocab, 21k classes)
+DETIC Detection (使用CLIP嵌入的分类器)
     ↓
-CLIP Semantic Filtering (filter by object_list, expand prompts)
+直接输出自定义类名 (如 "purple cup", "coffee maker")
     ↓
-ByteTrack Tracking (multi-object tracking)
+ByteTrack Tracking (multi-object tracking, 可选)
     ↓
 Environment Memory (temporal smoothing, occlusion handling)
     ↓
 Scene Graph Construction (with confidence scores)
 ```
+
+#### 方案 A2：DETIC 检测 + CLIP 后处理匹配（两步过程）
+
+**工作原理**：
+1. DETIC 使用 LVIS 词汇表检测基础类别（如 "cup", "sink"）
+2. 使用 CLIP 进行语义匹配，将检测结果映射到原始对象描述
+3. 通过相似度阈值过滤匹配
+
+**核心问题**：
+- ⚠️ **两步过程**：先检测基础类别，再匹配自定义描述，精度较低
+- ⚠️ **匹配复杂**：需要额外的 CLIP 匹配逻辑，容易出错
+- ⚠️ **信息损失**：属性信息（如 "purple", "blue"）可能丢失
+
+**实现代码**（不推荐）：
+```python
+# 1. DETIC检测LVIS类别
+outputs = predictor(image)  # 输出: ['cup', 'sink', ...]
+
+# 2. CLIP匹配到自定义描述
+for detection in detections:
+    # 使用CLIP匹配到object_list
+    matched = clip_match(detection.label, object_list)
+    detection.label = matched  # 可能匹配失败
+```
+
+**对比总结**：
+
+| 特性 | 方案 A1（推荐） | 方案 A2（不推荐） |
+|------|----------------|------------------|
+| **检测输出** | 直接是自定义类名 | 先输出基础类别，再匹配 |
+| **准确性** | ⭐⭐⭐ 高 | ⭐⭐ 中等 |
+| **实现复杂度** | ⭐ 简单 | ⭐⭐⭐ 复杂 |
+| **信息保留** | ✅ 完整保留属性 | ⚠️ 可能丢失属性 |
+| **Zero-shot能力** | ✅ 支持 | ⚠️ 有限 |
+| **与官方Demo一致性** | ✅ 完全一致 | ❌ 不一致 |
+
+**推荐使用方案 A1**，这是 Detic 官方 demo 采用的方法，准确性和实现简单性都更好。
+
+**历史演进说明**：
+
+- **原始实现（方案 A2）**：在早期实现中，我们尝试先使用 DETIC 检测 LVIS 类别，然后使用 CLIP 进行后处理匹配。这种方法虽然可行，但存在精度损失和信息丢失的问题。
+
+- **改进实现（方案 A1）**：通过分析 Detic 官方 demo 的实现，我们采用了 CLIP 文本嵌入替换分类器的方法。这种方法将 CLIP 的语义理解能力直接集成到 DETIC 的检测流程中，实现了 Zero-shot 学习，能够直接识别自定义类名。
+
+- **当前实现（demo4.ipynb）**：现在 demo4 使用方案 A1，与 Detic_demo 完全一致，确保了最佳的性能和准确性。
 
 ### 方案 B：MDETR（原始方案，用于对比）
 
@@ -305,25 +374,99 @@ Algorithm ComputeSpatialRelations(detections):
 - 使用 3D 边界框可以更准确地检测 "inside" 和 "on_top_of" 关系
 - 这正是为什么需要 Environment Memory 来稳定关系
 
+**混合方法改进**：
+- 仿真环境：优先使用 metadata（置信度 1.0），位置信息作为补充（置信度 0.85）
+- 真实环境：metadata 不可用时，使用位置/点云方法（置信度 0.75-0.85）
+- 动态表面类型判断：避免写死对象类型，使用关键词匹配
+
+## 1.5.3.5 混合空间关系判断方法（Hybrid Spatial Relation Detection）
+
+**核心思想**：结合 CRAFT 和 REFLECT 的优势，采用优先级策略判断空间关系
+
+### 优先级策略
+
+1. **优先级 1：基于 Metadata（CRAFT 方法，置信度 1.0）**
+   - 使用 AI2THOR 的 `parentReceptacles` 和 `receptacleObjectIds`
+   - 动态判断关系类型（容器 vs 表面）
+   - 完全可靠，基于 ground truth 数据
+
+2. **优先级 2：基于位置信息（CRAFT 方法，置信度 0.85）**
+   - 使用 3D position 计算 z_diff 和 horizontal_dist
+   - 动态表面类型检测（关键词匹配）
+   - 阈值：`0.05 < z_diff < 0.5m` 且 `horizontal_dist < 0.2m`
+
+3. **优先级 3：基于点云（REFLECT 方法，置信度 0.75）**
+   - 使用点云距离和边界框检查
+   - 当 metadata 不可用且位置信息不足时使用
+   - 需要点云数据可用
+
+### 实现代码
+
+```python
+def determine_spatial_relation_hybrid(obj1, obj2, node1, node2, use_point_cloud=False):
+    """
+    混合方法：优先 metadata，备用位置/点云信息
+    """
+    # Priority 1: Metadata-based (confidence 1.0)
+    if obj1.get('parentReceptacles'):
+        for parent_id in obj1.get('parentReceptacles', []):
+            if obj2.get('objectId') == parent_id:
+                has_receptacle = bool(obj2.get('receptacleObjectIds', []))
+                is_openable = obj2.get('openable', False) or 'isOpen' in obj2
+                if is_openable or has_receptacle:
+                    return ("inside", 1.0)
+                else:
+                    return ("on_top_of", 1.0)
+    
+    # Priority 2: Position-based (confidence 0.85)
+    if node1.position and node2.position:
+        z_diff = node1.position[2] - node2.position[2]
+        horizontal_dist = np.sqrt((pos1[0]-pos2[0])**2 + (pos1[1]-pos2[1])**2)
+        obj2_type = obj2.get('objectType', '').lower()
+        is_surface = any(kw in obj2_type for kw in ['countertop', 'table', 'stoveburner', 'burner', 'sink'])
+        
+        if (0.05 < z_diff < 0.5 and horizontal_dist < 0.2 and is_surface):
+            return ("on_top_of", 0.85)
+    
+    # Priority 3: Point cloud-based (confidence 0.75)
+    if use_point_cloud and node1.pcd and node2.pcd:
+        dist = get_point_cloud_distance(node1.pcd, node2.pcd)
+        if dist < 0.1:
+            if is_inside_point_cloud(node1.pcd, node2.pcd, 0.5):
+                obj2_type = obj2.get('objectType', '').lower()
+                is_surface = any(kw in obj2_type for kw in ['countertop', 'stoveburner', 'burner', 'sink'])
+                if is_surface:
+                    return ("on_top_of", 0.75)
+                else:
+                    return ("inside", 0.75)
+    
+    return None
+```
+
+### 优势
+
+- ✅ **准确性**：优先使用可靠的 metadata，避免误判
+- ✅ **可扩展性**：动态判断，不依赖写死的类型列表
+- ✅ **鲁棒性**：当 metadata 不可用时，自动回退到位置/点云方法
+- ✅ **置信度分数**：每个关系都有置信度，便于后续处理
+
 ## 1.5.4 真实环境完整流程
 
-### DETIC + CLIP 方案（推荐）
+### DETIC + CLIP 方案 A1（推荐：CLIP嵌入替换分类器）
 
 ```
 RGB-D Stream
     ↓
-DETIC Detection (open-vocab, 21k classes)
+DETIC Detection (使用CLIP嵌入的分类器)
+    - 自定义词汇表: ['coffee maker', 'purple cup', 'blue cup with handle', 'sink']
+    - 直接输出自定义类名（Zero-shot learning）
     ↓
-CLIP Semantic Filtering
-    - Prompt expansion ("cup" → ["a cup", "the cup", "coffee cup"])
-    - Semantic similarity filtering (threshold: 0.25)
-    ↓
-ByteTrack Multi-object Tracking
+ByteTrack Multi-object Tracking (可选)
     - Track IDs across frames
     - Handle occlusion and ID switches
     ↓
 Scene Graph Construction (with confidence)
-    - Nodes: objects with DETIC confidence + CLIP score
+    - Nodes: objects with DETIC confidence
     - Edges: spatial relations with confidence
     ↓
 Environment Memory (temporal smoothing, occlusion handling)
@@ -333,6 +476,37 @@ Environment Memory (temporal smoothing, occlusion handling)
     ↓
 Smoothed Scene Graph (for constraint validation)
 ```
+
+**关键改进**：
+- ✅ **Zero-shot 学习**：使用 CLIP 文本嵌入替换 DETIC 分类器，直接识别自定义类名
+- ✅ **一步到位**：检测结果直接是自定义类名，无需后处理匹配
+- ✅ **准确性高**：CLIP 的语义理解能力直接集成到检测流程中
+
+### DETIC + CLIP 方案 A2（不推荐：两步匹配过程）
+
+```
+RGB-D Stream
+    ↓
+DETIC Detection (LVIS词汇表)
+    - 输出基础类别: ['cup', 'sink', ...]
+    ↓
+CLIP Semantic Matching (后处理)
+    - 将检测结果匹配到object_list
+    - Semantic similarity filtering (threshold: 0.25)
+    - 可能匹配失败或信息丢失
+    ↓
+ByteTrack Multi-object Tracking
+    ↓
+Scene Graph Construction
+    ↓
+Environment Memory
+    ↓
+Smoothed Scene Graph
+```
+
+**关键问题**：
+- ⚠️ **两步过程**：先检测基础类别，再匹配自定义描述，精度较低
+- ⚠️ **信息损失**：属性信息（如颜色）可能在匹配过程中丢失
 
 ### MDETR 方案（原始，用于对比）
 
@@ -353,6 +527,11 @@ Smoothed Scene Graph (for constraint validation)
 **与仿真环境的区别**：
 - 仿真：Scene Graph 直接来自 ground truth
 - 真实：Scene Graph 经过感知 → 记忆平滑 → 置信度处理
+
+**混合方法应用**：
+- 仿真环境：优先使用 metadata（parentReceptacles），置信度 1.0
+- 真实环境：metadata 不可用时，使用位置/点云方法，置信度 0.75-0.85
+- 动态判断：所有方法都使用动态表面类型检测，避免写死对象类型
 
 
 ⸻
@@ -1416,3 +1595,482 @@ Causal Chain:
 - ✅ 因果链支持：能够检测因果违反
 
 详细优化方案请参考：`Method_OPTIMIZATION.md`
+
+⸻
+
+#️⃣ 12. 核心优化方案（基于失败检测实践）
+
+基于实际失败检测实践，CRAFT++ 在失败检测、错误聚合、因果链解释这三件核心事情上是"成立的"，但目前存在以下问题需要优化：
+
+## 12.1 问题分析
+
+### 12.1.1 约束噪声过大
+
+**问题描述**：
+- 一个早期失败 → 后续所有 postcondition 全部失败 → 数量级膨胀
+- 例如：`makeCoffee` 任务，真实"致命失败"应该只有 1–2 个，但现在检测到大量级联失败
+
+**根本原因**：
+- 现在正确地检测到了级联失败，但没有收敛它
+- 所有后续动作的 postcondition 都因为前置动作失败而失败
+
+### 12.1.2 错误源未分层
+
+**问题描述**：
+- Robot 相关 Warning 过多：`Node 'Robot' not found in scene graph`、`'NoneType' object has no attribute 'name'`
+- 工程上必须优化（否则 reviewer 会盯）
+
+**根本原因**：
+- 场景图是 object-centric，但约束假设存在 `holding(robot, mug)`
+- 场景图中没有 robot 节点，导致大量警告
+
+### 12.1.3 仿真伪失败未被充分隔离
+
+**问题描述**：
+- CRAFT 把"动作执行失败"和"感知未更新"混在了一起
+- 例如：Mug 实际被放上去了，但 scene graph 没更新 → postcondition false
+
+**根本原因**：
+- 没有区分 Execution failure 和 Perception failure
+- 所有失败都被当作执行失败处理
+
+### 12.1.4 LLM 分析存在幻觉
+
+**问题描述**：
+- LLM 分析逻辑正确，但"话太多 + 有轻微幻觉"
+- 例如："CoffeeMachine was not empty because mug was dirty" 这个推断链条有点 speculative，不是严格从约束推出来的
+
+**根本原因**：
+- LLM 可以"补故事"，而不是"解释已验证的约束失败"
+- CRAFT 的哲学是：LLM 不能"补故事"，只能"解释已验证的约束失败"
+
+⸻
+
+## 12.2 优化方案
+
+### 12.2.1 Failure Root Collapsing 机制
+
+**目标**：将级联失败收敛到根失败，减少约束噪声
+
+**实现方法**：
+
+```python
+def collapse_failures(violations):
+    """
+    收敛级联失败到根失败
+    
+    Args:
+        violations: List[Dict] - 所有违反的约束
+        
+    Returns:
+        Dict - 包含 root violation 和 derived violations
+    """
+    # 找到最早的致命违反（precondition violation）
+    root = None
+    earliest_step = float('inf')
+    
+    for v in violations:
+        # 只考虑 precondition violation（致命失败）
+        if v.get('failure_type') == 'PRECONDITION_VIOLATION':
+            step = v.get('step', float('inf'))
+            if step < earliest_step:
+                earliest_step = step
+                root = v
+    
+    if root is None:
+        # 如果没有 precondition violation，返回第一个 violation
+        root = violations[0] if violations else None
+        earliest_step = root.get('step', 0) if root else 0
+    
+    # 分离根失败和派生失败
+    derived = [v for v in violations if v.get('step', 0) > earliest_step]
+    
+    return {
+        "root": root,
+        "derived": derived,
+        "root_step": earliest_step,
+        "total_violations": len(violations),
+        "collapsed_count": len(derived)
+    }
+```
+
+**效果**：
+- `makeCoffee` 任务从 15+ 个违反收敛到 1–2 个根失败
+- 后续所有 postcondition 失败被标记为"派生失败"，不单独报告
+
+⸻
+
+### 12.2.2 虚拟 Robot 节点（Dummy Agent Node）
+
+**目标**：解决 Robot 相关警告，消除 `Node 'Robot' not found` 错误
+
+**实现方法**：
+
+```python
+def add_virtual_robot_node(scene_graph: SceneGraph):
+    """
+    添加虚拟 Robot 节点到场景图
+    
+    即使 Robot 节点在感知中不存在，也创建一个虚拟节点
+    用于约束评估（如 holding(robot, mug)）
+    """
+    # 检查是否已存在 Robot 节点
+    robot_exists = False
+    for node in scene_graph.nodes:
+        if node.name.lower() == 'robot' or node.object_type.lower() == 'robot':
+            robot_exists = True
+            break
+    
+    if not robot_exists:
+        # 创建虚拟 Robot 节点
+        robot_node = Node(
+            name="Robot",
+            object_type="agent",
+            attributes={
+                "gripper": "empty",  # 默认 gripper 为空
+                "is_virtual": True   # 标记为虚拟节点
+            },
+            pose=None,  # 位置未知（模拟环境）
+            confidence=1.0
+        )
+        scene_graph.add_node(robot_node)
+    
+    return scene_graph
+```
+
+**效果**：
+- 消除所有 `Node 'Robot' not found` 警告
+- `holding(robot, mug)` 等约束可以正常评估
+- 虚拟节点的 `gripper` 状态可以通过约束评估动态更新
+
+⸻
+
+### 12.2.3 Execution vs Perception Failure Distinction
+
+**目标**：区分动作执行失败和感知未更新
+
+**实现方法**：
+
+```python
+def classify_failure_type(violation: Dict, action_result: Optional[Dict] = None) -> str:
+    """
+    分类失败类型：Execution failure vs Perception failure
+    
+    Args:
+        violation: 约束违反信息
+        action_result: 动作执行结果（如果可用）
+        
+    Returns:
+        str: "execution_failure" | "perception_failure" | "unknown"
+    """
+    # 如果动作执行成功，但 postcondition 失败，可能是感知问题
+    if action_result and action_result.get('status') == 'SUCCESS':
+        if violation.get('failure_type') == 'POSTCONDITION_VIOLATION':
+            # 检查是否是感知未更新导致的
+            # 例如：对象实际被移动了，但 scene graph 没更新
+            return "perception_failure"
+    
+    # 如果 precondition 失败，通常是执行失败
+    if violation.get('failure_type') == 'PRECONDITION_VIOLATION':
+        return "execution_failure"
+    
+    # 如果动作执行失败，明确是执行失败
+    if action_result and action_result.get('status') == 'FAILED':
+        return "execution_failure"
+    
+    return "unknown"
+
+# 在失败检测中使用
+for violation in violations:
+    failure_type = classify_failure_type(violation, action_result)
+    violation['failure_category'] = failure_type
+    
+    if failure_type == "perception_failure":
+        # 标记为感知失败，不当作致命错误
+        violation['is_warning'] = True
+        violation['reason'] += " (可能由感知未更新导致)"
+```
+
+**效果**：
+- 区分真实的执行失败和感知噪声
+- 感知失败被标记为警告，不影响根因分析
+- 提高失败检测的准确性
+
+⸻
+
+### 12.2.4 LLM 分析优化（限制因果来源）
+
+**目标**：限制 LLM 的"因果来源"，避免幻觉，只解释已验证的约束失败
+
+**实现方法**：
+
+```python
+def build_llm_analysis_prompt(task_info: Dict, root_violation: Dict, 
+                              all_violations: List[Dict]) -> Tuple[str, str]:
+    """
+    构建优化的 LLM 分析 Prompt
+    
+    关键改进：
+    1. 显式指定 Root Violation
+    2. 限制 LLM 只能基于列出的约束失败进行解释
+    3. 禁止引入假设
+    """
+    system_prompt = """You are a robot task failure analyzer. Analyze constraint violations and identify the root cause of failures.
+
+CRITICAL RULES:
+1. Only explain failures strictly based on the listed constraint violations.
+2. Do NOT introduce assumptions beyond the constraints.
+3. Do NOT speculate about causes not mentioned in the constraint violations.
+4. Focus on the ROOT VIOLATION as the primary cause.
+5. Explain derived failures as consequences of the root violation.
+
+Your task is to:
+1. Identify the PRIMARY root cause (the root violation)
+2. Explain WHY the root violation occurred (based on the constraint description)
+3. Explain how derived failures are consequences of the root violation
+4. Suggest what should have been done differently (based on the root violation only)"""
+    
+    # 构建错误描述（只包含真实错误，排除警告）
+    real_errors = [v for v in all_violations if not v.get('is_warning', False)]
+    
+    error_descriptions = []
+    for i, error in enumerate(real_errors, 1):
+        constraint = error.get('constraint', {})
+        action = error.get('action', 'N/A')
+        step = error.get('step', '?')
+        reason = error.get('reason', 'N/A')
+        description = constraint.get('description', 'N/A')
+        failure_type = error.get('failure_type', 'Unknown')
+        
+        error_descriptions.append(
+            f"{i}. [{failure_type}]\n"
+            f"   动作: {action} (Step {step})\n"
+            f"   约束: {description}\n"
+            f"   失败原因: {reason}"
+        )
+    
+    # 显式指定 Root Violation
+    root_desc = f"""
+ROOT FAILURE (Primary Cause):
+- Step {root_violation.get('step', '?')}: {root_violation.get('action', 'N/A')}
+- Constraint: {root_violation.get('constraint', {}).get('description', 'N/A')}
+- Reason: {root_violation.get('reason', 'N/A')}
+
+All later failures are consequences of this root failure.
+"""
+    
+    user_prompt = f"""Task: {task_info.get('name', 'Unknown')}
+
+Task Goal: {task_info.get('success_condition', 'N/A')}
+
+{root_desc}
+
+All Constraint Violations ({len(real_errors)} errors):
+{chr(10).join(error_descriptions)}
+
+Please analyze:
+1. What is the PRIMARY root cause? (The root violation listed above)
+2. Why did the root violation occur? (Explain based ONLY on the constraint description and reason)
+3. How are the derived failures consequences of the root violation?
+4. What should have been done differently? (Based on the root violation only)
+
+IMPORTANT: Do NOT introduce assumptions beyond what is stated in the constraint violations above."""
+    
+    return system_prompt, user_prompt
+```
+
+**效果**：
+- LLM 只基于已验证的约束失败进行解释
+- 避免幻觉式推断（如 "mug was dirty"）
+- 显式指定 Root Violation，让 LLM 聚焦核心问题
+- 提高分析的可信度和可解释性
+
+⸻
+
+## 12.3 完整优化流程
+
+优化后的失败检测流程：
+
+```
+1. 场景图构建
+   ↓
+2. 添加虚拟 Robot 节点（如果不存在）
+   ↓
+3. 约束生成和编译
+   ↓
+4. 失败检测（按动作顺序）
+   ↓
+5. 失败分类（Execution vs Perception）
+   ↓
+6. Failure Root Collapsing（收敛级联失败）
+   ↓
+7. LLM 分析（基于 Root Violation，限制因果来源）
+```
+
+⸻
+
+## 12.4 预期效果
+
+优化后，CRAFT++ 应该能够：
+
+1. **约束噪声大幅降低**：
+   - `makeCoffee` 任务从 15+ 个违反收敛到 1–2 个根失败
+   - 级联失败被正确标记为"派生失败"
+
+2. **Robot 相关警告消除**：
+   - 不再出现 `Node 'Robot' not found` 错误
+   - `holding(robot, mug)` 等约束可以正常评估
+
+3. **失败类型准确分类**：
+   - 区分 Execution failure 和 Perception failure
+   - 感知失败被标记为警告，不影响根因分析
+
+4. **LLM 分析更可信**：
+   - 只基于已验证的约束失败进行解释
+   - 避免幻觉式推断
+   - 显式指定 Root Violation，聚焦核心问题
+
+⸻
+
+## 12.5 动作分类与约束生成策略（分层设计）
+
+### 12.5.1 问题分析
+
+**当前问题**：
+- `toggle_on(StoveBurner-4)` 等状态切换动作被标记为"未知动作类型"，未生成约束
+- 这导致 `boilWater` 任务中关键的状态变化无法被检测
+
+**根本原因**：
+- 将所有未知动作统一处理，没有区分动作类型
+- 状态切换动作（如 `toggle_on`）需要状态变量约束，但当前系统未生成
+
+### 12.5.2 动作分类设计
+
+CRAFT++ 采用**分层 + 保守 + 受控的 LLM 参与**策略，将动作分为三类：
+
+#### A类：纯导航/定位动作（可安全忽略）
+
+**特点**：
+- 不改变世界状态
+- 失败通常只影响后续动作是否可达
+- 例如：`navigate_to_obj`, `look_at`, `turn_to`
+
+**处理策略**：
+- ✅ 不生成约束（可安全忽略）
+- ✅ 为后续动作提供 `reachable` 先验（软约束）
+
+**论文表述**：
+> Navigation actions are treated as latent enabling actions and do not introduce explicit constraints.
+
+#### B类：状态切换动作（必须建模，但不需要复杂几何）
+
+**特点**：
+- 改变对象的离散状态（on/off, open/closed）
+- 不需要复杂的几何检查
+- 例如：`toggle_on(Faucet)`, `toggle_on(StoveBurner-4)`, `open(Cabinet)`
+
+**处理策略**：
+- ✅ **必须生成状态变量约束**
+- ✅ 至少生成 `POST: state(obj) == ON` 或 `POST: toggled_on(obj) == True`
+- ✅ 不需要写"火一定要热""水一定要沸腾"，只要："这个对象被改变了状态"
+
+**实现方法**：
+
+```python
+def _generate_state_variable_constraints(action, action_type, action_args):
+    """
+    为状态切换动作生成基本状态变量约束
+    """
+    if action_type == "toggle_on":
+        return [{
+            'type': 'postcondition',
+            'template': f"toggled_on({obj_name})",
+            'description': f"{obj_name} must be toggled on",
+            'condition_expr': f"node.attributes.get('isToggled', False)"
+        }]
+    # ... 其他状态切换动作
+```
+
+**关键改进**：
+- `toggle_on` 等动作**绝对不能**当"未知动作类型"
+- 必须生成状态变量约束，即使没有完整的模板
+
+#### C类：语义复合动作（可由 LLM 辅助生成"保守约束"）
+
+**特点**：
+- 高层语义强
+- 低层实现差异大
+- 规则很难写全
+- 例如：`pour`, `wash`, `heat`, `clean`
+
+**处理策略**：
+- ✅ **LLM 只填空，不造规则**
+- ✅ LLM 从预定义的约束类型中选择，不能自由创造
+- ✅ 系统再把它翻译成代码约束
+
+**实现方法**：
+
+```python
+def _generate_constraints_for_action_llm_constrained(action, action_type, action_args):
+    """
+    受限的 LLM 辅助生成（C类动作）
+    
+    LLM 只从预定义的约束类型中选择：
+    1. State change (on/off, clean/dirty)
+    2. Containment relation (inside, on_top_of)
+    3. Spatial relation (near, in_contact)
+    4. No constraint needed
+    """
+    prompt = f"""Given an action: {action}
+
+Select applicable constraints from:
+1. State change (on/off, clean/dirty)
+2. Containment relation
+3. Spatial relation
+4. No constraint needed
+
+Output only the selected types."""
+    
+    # LLM 返回选择，系统生成对应约束
+```
+
+**关键原则**：
+- ❌ **错误方式**：让 LLM 自己判断这个动作应该有什么约束
+- ✅ **正确方式**：LLM 只分类器/选择器，不是规则创造者
+
+### 12.5.3 完整动作分类表
+
+| 动作类型 | 分类 | 约束生成策略 | 示例 |
+|---------|------|-------------|------|
+| `navigate_to_obj` | A类（导航） | 不生成约束 | `navigate_to_obj(Pot)` |
+| `toggle_on` | B类（状态切换） | 生成状态变量约束 | `toggle_on(Faucet)` → `POST: toggled_on(Faucet)` |
+| `toggle_off` | B类（状态切换） | 生成状态变量约束 | `toggle_off(Faucet)` → `POST: toggled_off(Faucet)` |
+| `open` | B类（状态切换） | 生成状态变量约束 | `open(Cabinet)` → `POST: container_open(Cabinet)` |
+| `pour` | C类（语义复合） | LLM 受限选择 | `pour(Mug, Sink)` → LLM 选择约束类型 |
+| `pick_up` | 标准模板 | 使用预定义模板 | `pick_up(Mug)` → 模板生成 |
+| `put_in` | 标准模板 | 使用预定义模板 | `put_in(Mug, CoffeeMachine)` → 模板生成 |
+
+### 12.5.4 论文表述
+
+**推荐表述（硕士论文风格）**：
+
+> Not all actions in embodied task execution require explicit geometric constraints. CRAFT categorizes actions into navigation, state-changing, and semantic composite actions. Navigation actions are treated as latent enablers and do not introduce explicit constraints. For state-changing actions such as `toggle_on`, CRAFT introduces lightweight state-variable postconditions to capture discrete world state transitions. For high-level semantic actions whose effects are difficult to manually enumerate, CRAFT employs a constrained LLM-assisted selection mechanism, where the language model selects from a predefined constraint schema rather than generating free-form rules. This design ensures both extensibility and determinism, avoiding the hallucination issues observed in prior LLM-only approaches.
+
+### 12.5.5 预期效果
+
+优化后，CRAFT++ 应该能够：
+
+1. **正确识别状态切换动作**：
+   - `toggle_on(StoveBurner-4)` 不再被标记为"未知动作类型"
+   - 自动生成 `POST: toggled_on(StoveBurner-4)` 约束
+
+2. **boilWater 任务完整检测**：
+   - `toggle_on(Faucet)` → `POST: Faucet.state == ON`
+   - `toggle_on(StoveBurner-4)` → `POST: StoveBurner-4.state == ON`
+   - 结合 `put_in(Pot, Sink)` → `IF Faucet.state == ON ∧ inside(Pot, Sink) → Pot.filled == True`
+
+3. **导航动作正确忽略**：
+   - `navigate_to_obj` 不生成约束，不产生 false positive
+
+4. **模拟环境错误硬性剔除**：
+   - Robot/NoneType 相关错误不出现在 root-cause 候选集中

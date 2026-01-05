@@ -4,8 +4,8 @@ Combines CRAFT's dynamic approach with REFLECT's rich features:
 - Composite states (e.g., "filled with coffee and dirty")
 - Rich relation types (above, below, blocking, left_of, right_of)
 - Point cloud-based precise calculations (if available)
+- Hybrid method: Prioritize metadata, fallback to point cloud/position
 """
-
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Set
 from .scene_graph import SceneGraph, Node, Edge
@@ -20,6 +20,11 @@ NORM_THRESH_UP_DOWN = 0.9
 NORM_THRESH_LEFT_RIGHT = 0.8
 OCCLUDE_RATIO_THRESH = 0.5
 DEPTH_THRESH = 0.9
+
+# CRAFT thresholds (world space, in meters)
+CRAFT_Z_DIFF_MIN = 0.05  # 5cm minimum height difference
+CRAFT_Z_DIFF_MAX = 0.5   # 50cm maximum height difference
+CRAFT_HORIZONTAL_DIST_MAX = 0.2  # 20cm maximum horizontal distance
 
 
 def extract_composite_state(obj: Dict) -> Optional[str]:
@@ -209,6 +214,84 @@ def calculate_camera_space_vector(pos1: Tuple[float, float, float],
         return None
 
 
+def determine_spatial_relation_hybrid(
+    obj1: Dict, obj2: Dict, node1: Node, node2: Node,
+    use_point_cloud: bool = False
+) -> Optional[Tuple[str, float]]:
+    """
+    Hybrid method to determine spatial relation: Prioritize metadata, fallback to point cloud/position
+    
+    Priority:
+    1. Metadata-based (parentReceptacles) - Highest confidence (1.0)
+    2. Position-based (CRAFT method) - Medium confidence (0.85)
+    3. Point cloud-based (REFLECT method) - Lower confidence (0.75)
+    
+    Args:
+        obj1: Object 1 metadata dictionary
+        obj2: Object 2 metadata dictionary
+        node1: Node 1
+        node2: Node 2
+        use_point_cloud: Whether to use point cloud data
+        
+    Returns:
+        Tuple of (relation_type, confidence) or None
+        - relation_type: "inside", "on_top_of", or None
+        - confidence: 0.0 to 1.0
+    """
+    # Priority 1: Based on parentReceptacles metadata (CRAFT method, highest confidence)
+    # Check if obj1 is inside obj2 based on metadata
+    if obj1.get('parentReceptacles'):
+        for parent_id in obj1.get('parentReceptacles', []):
+            if obj2.get('objectId') == parent_id:
+                # Dynamic relation type judgment (CRAFT's dynamic approach)
+                has_receptacle = bool(obj2.get('receptacleObjectIds', []))
+                is_openable_container = 'isOpen' in obj2 or obj2.get('openable', False)
+                receptacle_count = len(obj2.get('receptacleObjectIds', [])) if isinstance(obj2.get('receptacleObjectIds'), list) else 0
+                
+                if is_openable_container or (has_receptacle and receptacle_count > 0):
+                    return ("inside", 1.0)  # Highest confidence
+                else:
+                    return ("on_top_of", 1.0)  # Highest confidence
+    
+    # Priority 2: Based on position information (CRAFT method, medium confidence)
+    if node1.position is not None and node2.position is not None:
+        pos1 = node1.position
+        pos2 = node2.position
+        
+        z_diff = pos1[2] - pos2[2]
+        horizontal_dist = np.sqrt((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2)
+        
+        # Dynamic surface type detection (CRAFT's dynamic approach)
+        obj2_type = obj2.get('objectType', '').lower()
+        is_surface = any(kw in obj2_type for kw in ['countertop', 'table', 'stoveburner', 'burner', 'sink'])
+        
+        # CRAFT's on_top_of criteria
+        if (CRAFT_Z_DIFF_MIN < z_diff < CRAFT_Z_DIFF_MAX and 
+            horizontal_dist < CRAFT_HORIZONTAL_DIST_MAX and 
+            is_surface):
+            return ("on_top_of", 0.85)  # Medium confidence
+    
+    # Priority 3: Based on point cloud (REFLECT method, lower confidence, if available)
+    if use_point_cloud and node1.pcd is not None and node2.pcd is not None:
+        dist = get_point_cloud_distance(node1.pcd, node2.pcd)
+        if dist is not None and dist < IN_CONTACT_DISTANCE:
+            # Check inside relation using point cloud
+            if is_inside_point_cloud(node1.pcd, node2.pcd, INSIDE_THRESH):
+                # Dynamic surface type detection (avoiding hardcoded checks)
+                obj2_type = obj2.get('objectType', '').lower()
+                is_surface = any(kw in obj2_type for kw in ['countertop', 'stoveburner', 'burner', 'sink', 'table'])
+                if is_surface:
+                    return ("on_top_of", 0.75)  # Lower confidence (point cloud)
+                else:
+                    return ("inside", 0.75)  # Lower confidence (point cloud)
+            
+            # Check on_top_of using point cloud (REFLECT method)
+            # This requires corner points (bounding box) which we might not have
+            # Skip this for now as it requires additional data
+    
+    return None
+
+
 def add_rich_spatial_relations(sg: SceneGraph, objects: List[Dict], 
                               use_point_cloud: bool = False,
                               camera_world_xyz: Optional[Tuple[float, float, float]] = None,
@@ -216,7 +299,7 @@ def add_rich_spatial_relations(sg: SceneGraph, objects: List[Dict],
                               horizon: Optional[float] = None) -> None:
     """
     Add rich spatial relations (above, below, blocking, left_of, right_of)
-    based on point cloud or position data
+    using hybrid method: Prioritize metadata, fallback to point cloud/position
     
     Args:
         sg: Scene graph to add relations to
@@ -243,7 +326,24 @@ def add_rich_spatial_relations(sg: SceneGraph, objects: List[Dict],
             if obj1.get('isPickedUp', False) or obj2.get('isPickedUp', False):
                 continue
             
-            # Calculate distance
+            # Check if relation already exists
+            edge_key = (node1.name, node2.name)
+            if edge_key in sg.edges:
+                continue  # Skip if relation already determined by metadata
+            
+            # Try hybrid method to determine inside/on_top_of
+            # (Note: This is a fallback - metadata-based relations should already be added in Step 2)
+            relation_result = determine_spatial_relation_hybrid(
+                obj1, obj2, node1, node2, use_point_cloud
+            )
+            
+            if relation_result:
+                rel_type, confidence = relation_result
+                # Only add if not already exists and confidence is reasonable
+                if edge_key not in sg.edges and confidence >= 0.75:
+                    sg.add_edge(Edge(node1, node2, rel_type))
+            
+            # Calculate distance for rich relations
             if use_point_cloud and node1.pcd is not None and node2.pcd is not None:
                 dist = get_point_cloud_distance(node1.pcd, node2.pcd)
             elif node1.position is not None and node2.position is not None:
@@ -256,24 +356,23 @@ def add_rich_spatial_relations(sg: SceneGraph, objects: List[Dict],
             if dist is None:
                 continue
             
-            # IN CONTACT relations (distance < 0.1m)
+            # IN CONTACT relations (distance < 0.1m) - Additional refinement
             if dist < IN_CONTACT_DISTANCE:
-                # Check inside relation using point cloud if available
+                # Use point cloud for additional inside/on_top_of refinement if available
                 if use_point_cloud and node1.pcd is not None and node2.pcd is not None:
                     if is_inside_point_cloud(node1.pcd, node2.pcd, INSIDE_THRESH):
-                        # Check if target is a surface (countertop, stove burner)
+                        # Dynamic surface type detection
                         obj2_type = obj2.get('objectType', '').lower()
-                        is_surface = any(kw in obj2_type for kw in ['countertop', 'stoveburner', 'burner'])
-                        if is_surface:
-                            edge_key = (node1.name, node2.name)
-                            if edge_key not in sg.edges:
+                        is_surface = any(kw in obj2_type for kw in ['countertop', 'stoveburner', 'burner', 'sink', 'table'])
+                        
+                        # Only add if not already exists (metadata takes priority)
+                        if edge_key not in sg.edges:
+                            if is_surface:
                                 sg.add_edge(Edge(node1, node2, "on_top_of"))
-                        else:
-                            edge_key = (node1.name, node2.name)
-                            if edge_key not in sg.edges:
+                            else:
                                 sg.add_edge(Edge(node1, node2, "inside"))
             
-            # CLOSE TO relations (distance < 0.4m)
+            # CLOSE TO relations (distance < 0.4m) - for above/below/left/right/blocking
             if dist < CLOSE_DISTANCE:
                 # Calculate camera space vector for directional relations
                 if node1.position is not None and node2.position is not None:
@@ -342,4 +441,3 @@ def add_rich_spatial_relations(sg: SceneGraph, objects: List[Dict],
                                                     sg.add_edge(Edge(node1, node2, "blocking"))
                             except Exception:
                                 pass
-
