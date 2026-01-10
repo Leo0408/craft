@@ -81,20 +81,36 @@ def generate_scene_graph_from_event_enhanced(
                     position = tuple(pos[:3])
             
             # Create node with enhanced attributes
+            # 关键：每个 event frame 都同步更新所有状态属性
+            # 确保 isToggled, isOpen, isFilled 等状态在每个时间步都正确反映
             node = Node(
                 name=obj.get('name', 'unknown'),
                 object_type=obj_type,
                 state=state,  # Composite state
                 position=position,
                 attributes={
+                    # 状态属性：从 metadata 中直接读取，每个 frame 都更新
                     'isFilled': obj.get('isFilledWithLiquid', False) or obj.get('isFilled', False),
                     'isOpen': obj.get('isOpen', False),
-                    'isToggled': obj.get('isToggledOn', False) or obj.get('isToggled', False),
+                    # isToggled: 优先使用 isToggledOn，回退到 isToggled，再检查 toggleable 属性
+                    # AI2THOR 中，某些对象（如 Faucet）的 toggle 状态可能在不同的字段中
+                    'isToggled': (
+                        obj.get('isToggledOn', False) or 
+                        obj.get('isToggled', False) or
+                        (obj.get('toggleable', False) and obj.get('isOn', False)) or
+                        obj.get('isOn', False)
+                    ),
                     'isPickedUp': obj.get('isPickedUp', False),
                     'fillLiquid': obj.get('fillLiquid', None),
                     'isDirty': obj.get('isDirty', False),
                     'isSliced': obj.get('isSliced', False),
                     'isBroken': obj.get('isBroken', False),
+                    # 其他可能的状态属性（用于调试）
+                    'toggleable': obj.get('toggleable', None),
+                    'openable': obj.get('openable', False),
+                    'isOn': obj.get('isOn', None),  # Faucet 等可能使用 isOn
+                    'isToggledOn_raw': obj.get('isToggledOn', None),  # 原始值用于调试
+                    'isToggled_raw': obj.get('isToggled', None),  # 原始值用于调试
                 }
             )
             
@@ -134,7 +150,11 @@ def generate_scene_graph_from_event_enhanced(
                                 is_openable_container = 'isOpen' in other_obj or other_obj.get('openable', False)
                                 receptacle_count = len(other_obj.get('receptacleObjectIds', [])) if isinstance(other_obj.get('receptacleObjectIds'), list) else 0
                                 
-                                if is_openable_container or (has_receptacle and receptacle_count > 0):
+                                # 改进：Sink, SinkBasin 等容器类型即使 receptacleObjectIds 为空也应被识别为容器
+                                parent_obj_type = other_obj.get('objectType', '').lower()
+                                is_container_type = any(kw in parent_obj_type for kw in ['sink', 'sinkbasin', 'bowl', 'pot', 'pan', 'mug', 'cup'])
+                                
+                                if is_openable_container or (has_receptacle and receptacle_count > 0) or is_container_type:
                                     edge_key = (node.name, parent_node.name)
                                     if edge_key not in sg.edges:
                                         sg.add_edge(Edge(node, parent_node, "inside"))

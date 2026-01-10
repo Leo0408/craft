@@ -120,3 +120,5 @@ ls -la datasets/metadata/
 3. **CLIP-only模式**：如果DETIC加载失败，检测器会自动切换到CLIP-only模式，仍然可以工作，但检测精度可能会降低。
 
 
+
+

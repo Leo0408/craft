@@ -426,6 +426,27 @@ class ConstraintGenerator:
             if not bound_args:
                 continue
             
+            # 特殊处理：put_on 动作根据目标对象类型判断应该生成 inside 还是 on_top_of 约束
+            # Sink 和 SinkBasin 视为等价（都是容器类型）
+            if action_type == "put_on" and predicate == "on_top_of" and len(bound_args) >= 2:
+                target_obj = bound_args[1]
+                target_obj_lower = target_obj.lower()
+                
+                # 定义容器类型（包括 Sink/SinkBasin 的等价处理）
+                CONTAINER_TYPES = {
+                    'sink', 'sinkbasin',  # Sink 和 SinkBasin 视为等价
+                    'bowl', 'pot', 'pan', 'mug', 'cup', 'coffeemachine',
+                    'fridge', 'cabinet', 'drawer', 'microwave', 'oven'
+                }
+                
+                # 判断目标对象是否为容器类型
+                is_container = any(container_type in target_obj_lower for container_type in CONTAINER_TYPES)
+                
+                if is_container:
+                    # 对于容器类型，生成 inside 约束而不是 on_top_of
+                    predicate = "inside"
+                    bound_args = bound_args  # 保持参数不变
+            
             # Build constraint
             constraint = {
                 'id': f"{constraint_id_base}_POST{idx+1}",

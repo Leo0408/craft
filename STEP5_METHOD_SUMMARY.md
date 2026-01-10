@@ -323,3 +323,5 @@ if constraint_confidence < 0.7:
 - 场景图生成：`core/enhanced_generate_scene_graph.py`
 - 方法文档：`Method.md` Section 12
 
+
+

@@ -248,7 +248,11 @@ def determine_spatial_relation_hybrid(
                 is_openable_container = 'isOpen' in obj2 or obj2.get('openable', False)
                 receptacle_count = len(obj2.get('receptacleObjectIds', [])) if isinstance(obj2.get('receptacleObjectIds'), list) else 0
                 
-                if is_openable_container or (has_receptacle and receptacle_count > 0):
+                # 改进：Sink, SinkBasin 等容器类型即使 receptacleObjectIds 为空也应被识别为容器
+                obj2_type = obj2.get('objectType', '').lower()
+                is_container_type = any(kw in obj2_type for kw in ['sink', 'sinkbasin', 'bowl', 'pot', 'pan', 'mug', 'cup'])
+                
+                if is_openable_container or (has_receptacle and receptacle_count > 0) or is_container_type:
                     return ("inside", 1.0)  # Highest confidence
                 else:
                     return ("on_top_of", 1.0)  # Highest confidence
@@ -289,7 +293,7 @@ def determine_spatial_relation_hybrid(
             # This requires corner points (bounding box) which we might not have
             # Skip this for now as it requires additional data
     
-    return None
+        return None
 
 
 def add_rich_spatial_relations(sg: SceneGraph, objects: List[Dict], 
@@ -367,9 +371,9 @@ def add_rich_spatial_relations(sg: SceneGraph, objects: List[Dict],
                         
                         # Only add if not already exists (metadata takes priority)
                         if edge_key not in sg.edges:
-                            if is_surface:
+                        if is_surface:
                                 sg.add_edge(Edge(node1, node2, "on_top_of"))
-                            else:
+                        else:
                                 sg.add_edge(Edge(node1, node2, "inside"))
             
             # CLOSE TO relations (distance < 0.4m) - for above/below/left/right/blocking

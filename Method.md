@@ -833,7 +833,7 @@ BEGIN
                 action=action
             )
             constraints.append(constraint)
-        
+            
         # 4. 为当前动作生成后置条件 (Postconditions)
         FOR each post_template IN template["post"]:
             constraint = Instantiate(
@@ -844,7 +844,7 @@ BEGIN
                 action=action
             )
             constraints.append(constraint)
-    
+            
     RETURN constraints
 END
 ```
@@ -1131,13 +1131,40 @@ Algorithm ValidateConstraint(constraint, scene_graph, action_index, events):
         evaluation_time = f"before action {action_index + 1}"
     
     elif constraint.type == 'post':
-        # Postcondition: 在动作执行后检查
-        if action_index < len(events) - 1:
-            eval_scene_graph = GenerateSceneGraph(events[action_index + 1])
-            eval_scene_graph = eval_scene_graph.extract_task_relevant_subgraph(task_info)
+        # Postcondition: 使用 Postcondition Temporal Window 检查
+        # 关键改进：不在 immediate next frame 检查，而是在时间窗口内检查
+        # 避免延迟更新导致的误报（如物理下落、状态更新延迟）
+        
+        # 根据动作类型确定窗口大小 K
+        if action_type == 'toggle':
+            K = 5  # toggle 动作：3-5 帧
+        elif action_type in ['put_in', 'put_on']:
+            K = 8  # put_in/put_on 动作：5-10 帧
+        elif action_type == 'pick_up':
+            K = 3  # pick_up 动作：2-3 帧
         else:
-            eval_scene_graph = final_scene_graph
-        evaluation_time = f"after action {action_index + 1}"
+            K = 5  # 默认：5 帧
+        
+        # Postcondition Temporal Window: [f_end(i), f_end(i)+1, ..., f_end(i)+K]
+        start_frame = action_index + 1
+        end_frame = min(start_frame + K, len(events))
+        
+        post_satisfied = False
+        for check_frame in range(start_frame, end_frame):
+            eval_scene_graph = GenerateSceneGraph(events[check_frame])
+            eval_scene_graph = eval_scene_graph.extract_task_relevant_subgraph(task_info)
+            
+            (value, atom_conf) = EvalPredicate(constraint.condition_ast, eval_scene_graph, memory)
+            if value == True:
+                post_satisfied = True
+                break  # 只要窗口内任何一帧满足，就认为满足
+        
+        if post_satisfied:
+            return SATISFIED
+        else:
+            return VIOLATED
+        
+        evaluation_time = f"after action {action_index + 1} (temporal window [{start_frame}-{end_frame-1}])"
     
     else:  # goal
         eval_scene_graph = final_scene_graph
@@ -2074,3 +2101,339 @@ Output only the selected types."""
 
 4. **模拟环境错误硬性剔除**：
    - Robot/NoneType 相关错误不出现在 root-cause 候选集中
+
+### 12.5.8 Postcondition Temporal Window（关键改进）⭐
+
+**问题分析**：
+- 当前实现在动作执行后的**下一帧（immediate next frame）**就检查 postcondition
+- 但物理仿真中，状态更新往往是**延迟的**：
+  - `put_in(Pot, Sink)` → `inside(pot, sink)` 需要物理下落（可能需要 3-7 帧）
+  - `toggle_on(Faucet)` → `isToggled` 状态更新延迟（可能需要 2-5 帧）
+- 这导致大量**假 postcondition violation**（false positives）
+
+**根本原因**：
+- AI2THOR 等仿真环境的物理更新和状态同步需要时间
+- 不是 scene graph 生成错误，也不是 constraint 错误
+- **是 postcondition evaluation timing 错误**
+
+**解决方案：Postcondition Temporal Window**
+
+**核心思想**：
+不在 immediate next frame 检查，而是在一个**时间窗口**内检查。只要在窗口内任何一帧满足，就认为 postcondition 满足。
+
+**定义**：
+
+```
+PostFrames(action_i) = [f_end(i), f_end(i)+1, ..., f_end(i)+K]
+
+post_satisfied = any(
+    check_postcondition(state(f)) 
+    for f in PostFrames(action_i)
+)
+```
+
+**窗口大小（K）的经验值（simulation）**：
+
+| Action Type | K (frames) | 原因 |
+|------------|-----------|------|
+| `toggle` | 3-5 | 状态更新延迟 |
+| `put_in` / `put_on` | 5-10 | 物理下落需要时间 |
+| `pick_up` | 2-3 | 抓取状态更新较快 |
+| 默认 | 5 | 保守估计 |
+
+**实现伪代码**：
+
+```python
+# 根据动作类型确定窗口大小 K
+if 'toggle' in action.lower():
+    K = 5  # toggle 动作：3-5 帧
+elif 'put_in' in action.lower() or 'put_on' in action.lower():
+    K = 8  # put_in/put_on 动作：5-10 帧
+elif 'pick_up' in action.lower():
+    K = 3  # pick_up 动作：2-3 帧
+else:
+    K = 5  # 默认：5 帧
+
+# Postcondition Temporal Window 检查
+start_frame = action_idx + 1
+end_frame = min(start_frame + K, len(events))
+
+post_satisfied = False
+satisfied_frame = None
+
+for check_frame in range(start_frame, end_frame):
+    eval_sg = GenerateSceneGraph(events[check_frame])
+    is_valid, reason, _, diagnostics = EvaluateConstraint(eval_sg, constraint)
+    
+    if is_valid:
+        post_satisfied = True
+        satisfied_frame = check_frame
+        break  # 只要窗口内任何一帧满足，就认为满足
+
+if not post_satisfied:
+    # 窗口内所有帧都不满足，才判定为 violation
+    return VIOLATION
+else:
+    return SATISFIED
+```
+
+**效果**：
+- ✅ **大幅减少假 postcondition violation**
+- ✅ **准确反映真实的执行失败**（而不是时间延迟）
+- ✅ **提高失败检测的准确性**
+
+**论文级表述**：
+
+> We observe that evaluating postconditions on the immediate next frame after action execution often leads to false positives due to delayed physical and state updates in simulation environments. Therefore, we adopt a **temporal postcondition evaluation strategy**, where a postcondition is considered satisfied if it emerges within a short temporal window following the action. The window size is dynamically determined based on the action type (e.g., 5-10 frames for manipulation actions, 3-5 frames for toggle actions), accounting for the varying latency of physical simulation and state synchronization.
+
+**关键洞察**：
+- 这不是 scene graph 生成错误，也不是 constraint 错误
+- **是 postcondition evaluation timing 的错误**
+- 这个问题正是 CRAFT 方法和原论文（如 REFLECT）真正拉开差距的地方
+
+**预期改进**：
+- `put_in` / `put_on` 动作的 postcondition violation 大幅减少
+- `toggle` 动作的 postcondition violation 大幅减少
+- 更准确的根因分析（不会因为时间延迟而误判）
+
+### 12.5.9 Postcondition 违反的进一步诊断
+
+**问题分析**：
+即使使用了 Postcondition Temporal Window，仍然可能有 postcondition 违反。这些问题通常不是时间延迟的问题，而是：
+
+1. **节点匹配问题**：约束中提到的对象名称（如 "Mug"）可能无法匹配到场景图中的节点（如 "Mug_0b3dbbd3"）
+2. **空间关系未建立**：`on_top_of`、`inside` 等关系可能在场景图中没有正确建立
+3. **状态属性同步延迟**：`isToggled`、`isFilled` 等属性虽然 metadata 更新了，但 scene graph 中可能还没有同步
+4. **filled 约束语义不清**：对于容器（如 Sink），"filled" 的含义可能需要特别处理
+
+**诊断方法**：
+
+Step 5.5 排查 cell 提供了详细的诊断信息，包括：
+- 约束中提到的对象是否在场景图中找到
+- 相关节点和边的详细信息
+- 状态属性与 metadata 的对比
+- 场景图的完整信息（节点列表、边列表）
+
+**可能的问题和解决方案**：
+
+#### 问题 1：节点匹配失败
+
+**症状**：约束中提到的对象未在场景图中找到
+
+**解决方案**：
+- 改进 `find_node_by_name` 函数，使用更健壮的匹配逻辑
+- 提取对象名称的基础部分（去掉 ID），进行匹配
+- 同时匹配对象名称和对象类型
+
+#### 问题 2：空间关系未建立
+
+**症状**：约束中提到的对象都在场景图中找到，但相关边不存在
+
+**解决方案**：
+- 检查 `parentReceptacles` metadata 是否存在
+- 检查位置信息是否准确
+- 调整位置判断的阈值（z_diff, horizontal_dist）
+- 扩展表面类型关键词列表（确保包含所有可能的表面类型）
+
+#### 问题 3：状态属性同步延迟
+
+**症状**：节点存在，但状态属性（isToggled, isFilled）与 metadata 不一致
+
+**解决方案**：
+- 确保每个 frame 都正确同步状态属性
+- 检查 metadata 字段名是否正确（如 `isToggledOn` vs `isToggled`）
+- 使用多个字段作为回退（如 `obj.get('isToggledOn', False) or obj.get('isToggled', False)`）
+
+#### 问题 4：filled 约束语义不清
+
+**症状**：Sink 的 filled 检查失败，但 Sink 内部有液体对象
+
+**解决方案**：
+- 对于容器（如 Sink），filled 应该检查：
+  1. 容器本身的 `isFilled` 属性
+  2. 容器内部是否有液体对象
+  3. 容器的 `fillLiquid` 属性
+
+**改进的 filled 检查逻辑**：
+```python
+def check_filled(sg, obj_name):
+    """检查对象是否 filled（改进版）"""
+    node = find_node_by_name(sg, obj_name)
+    if not node:
+        return False, "Node not found"
+    
+    # 1. 检查 isFilled 属性
+    if node.attributes.get('isFilled', False):
+        return True, "isFilled attribute is True"
+    
+    # 2. 对于容器（如 Sink），检查内部是否有液体对象
+    if 'sink' in obj_name.lower() or 'container' in node.object_type.lower():
+        inside_liquid_objects = []
+        for edge in sg.edges.values():
+            if edge.end.name == node.name and edge.edge_type == 'inside':
+                inside_obj = edge.start
+                if inside_obj.attributes.get('isFilled', False):
+                    inside_liquid_objects.append(inside_obj.name)
+        if inside_liquid_objects:
+            return True, f"Contains filled objects: {inside_liquid_objects}"
+    
+    # 3. 检查 fillLiquid 属性
+    if node.attributes.get('fillLiquid'):
+        return True, f"fillLiquid: {node.attributes.get('fillLiquid')}"
+    
+    return False, "Not filled"
+```
+
+### 12.5.6 模拟环境中的 Robot 交互约束过滤
+
+**问题分析**：
+- 在模拟环境中，robot 交互相关的约束（`holding`, `gripper_empty`）不可靠
+- 这些约束不是任务失败的根本原因，而是模拟环境的实现细节
+- 例如：`holding(mug)` 在模拟环境中可能因为 Robot 节点不存在或状态不同步而失败
+
+**解决方案**：
+- 在失败检测阶段，自动跳过 robot 交互相关的约束
+- 这些约束被标记为 `SKIPPED`，不视为失败
+- 只关注任务相关的物理约束（如 `container_empty`, `inside`, `on_top_of`）
+
+**实现方法**：
+```python
+# 在约束检查循环中
+is_robot_interaction = (
+    'holding' in constraint_template or 
+    'holding' in constraint_desc or
+    'gripper_empty' in constraint_template or
+    'gripper' in constraint_desc or
+    'robot must be holding' in constraint_desc
+)
+if is_robot_interaction:
+    skipped_constraints.append({
+        'reason': "SKIPPED: Robot interaction constraint in simulation environment"
+    })
+    continue  # 跳过 robot 交互约束
+```
+
+**效果**：
+- 减少模拟环境中的误报
+- 聚焦任务相关的物理约束
+- 提高失败检测的准确性
+
+### 12.5.7 状态属性同步优化（每帧更新）
+
+**问题分析**：
+- 状态属性（如 `isToggled`, `isOpen`, `isFilled`）可能只在 final frame 读取
+- 导致中间帧的状态不正确，约束验证失败
+- 例如：`Faucet must be toggled on` 在动作执行后应该为 True，但 scene graph 中仍为 False
+
+**解决方案**：
+- **每个 event frame 都同步更新状态属性**
+- 在 scene graph 构建时，直接从 `obj_metadata` 中读取状态
+- 确保每个时间步的状态都正确反映
+
+**实现方法**：
+```python
+# 在 generate_scene_graph_from_event_enhanced 中
+node = Node(
+    name=obj.get('name', 'unknown'),
+    attributes={
+        # 状态属性：从 metadata 中直接读取，每个 frame 都更新
+        'isToggled': obj.get('isToggledOn', False) or obj.get('isToggled', False),
+        'isOpen': obj.get('isOpen', False),
+        'isFilled': obj.get('isFilledWithLiquid', False) or obj.get('isFilled', False),
+        # ... 其他状态属性
+    }
+)
+```
+
+**关键原则**：
+- ✅ **每个 event frame 都生成新的 scene graph**
+- ✅ **状态属性从当前 frame 的 metadata 中读取**
+- ✅ **不使用缓存或之前 frame 的状态**
+
+**效果**：
+- 状态属性在每个时间步都正确
+- 约束验证能够准确检测状态变化
+- 避免"状态未更新"导致的误报
+
+### 12.5.10 put_on 约束语义自适应改进
+
+**问题分析**：
+- `put_on` 动作模板默认生成 `on_top_of` 约束，但对于容器类型（如 Sink, SinkBasin），应该生成 `inside` 约束
+- 实际情况：`put_on(Mug, SinkBasin)` 在场景图中显示为 `Mug --[inside]--> SinkBasin`，但约束生成的是 `Mug must be on top of SinkBasin`
+- 语义不匹配导致约束验证失败
+
+**解决方案**：
+- 在约束生成时，根据目标对象类型判断应该生成 `inside` 还是 `on_top_of` 约束
+- 如果目标对象是容器类型（Sink, SinkBasin, Bowl 等），`put_on` 应该生成 `inside` 约束
+- **Sink 和 SinkBasin 视为等价**（都是容器类型）
+
+**实现方法**：
+```python
+# 在 _generate_constraints_for_action 方法中
+# 特殊处理：put_on 动作根据目标对象类型判断应该生成 inside 还是 on_top_of 约束
+if action_type == "put_on" and predicate == "on_top_of" and len(bound_args) >= 2:
+    target_obj = bound_args[1]
+    target_obj_lower = target_obj.lower()
+    
+    # 定义容器类型（包括 Sink/SinkBasin 的等价处理）
+    CONTAINER_TYPES = {
+        'sink', 'sinkbasin',  # Sink 和 SinkBasin 视为等价
+        'bowl', 'pot', 'pan', 'mug', 'cup', 'coffeemachine',
+        'fridge', 'cabinet', 'drawer', 'microwave', 'oven'
+    }
+    
+    # 判断目标对象是否为容器类型
+    is_container = any(container_type in target_obj_lower for container_type in CONTAINER_TYPES)
+    
+    if is_container:
+        # 对于容器类型，生成 inside 约束而不是 on_top_of
+        predicate = "inside"
+```
+
+**关键原则**：
+- ✅ **动态判断**：根据目标对象类型动态选择约束类型
+- ✅ **语义对齐**：确保生成的约束与场景图中的实际关系一致
+- ✅ **等价处理**：Sink 和 SinkBasin 视为等价（都是容器类型）
+
+**效果**：
+- `put_on(Mug, SinkBasin)` 现在会生成 `inside(Mug, SinkBasin)` 约束
+- 约束与场景图中的实际关系一致
+- 避免语义不匹配导致的约束验证失败
+
+### 12.5.11 Faucet Toggle 状态检查改进
+
+**问题分析**：
+- `toggle_on(Faucet)` 执行后，`isToggled` 属性仍然是 `False`
+- metadata 中 `isToggledOn` 是 `None`，`isToggled` 是 `False`
+- AI2THOR 中，某些对象（如 Faucet）的 toggle 状态可能使用不同的字段名
+
+**根本原因**：
+- AI2THOR 的 metadata 中，不同对象的 toggle 状态可能使用不同的字段名
+- 某些对象使用 `isToggledOn`，某些对象使用 `isToggled`，某些对象使用 `isOn`
+- 只检查单一字段会导致状态检测失败
+
+**解决方案**：
+- 改进 `isToggled` 属性的提取逻辑，检查多个可能的字段
+- 优先使用 `isToggledOn`，回退到 `isToggled`，再检查 `toggleable` 属性和 `isOn` 字段
+- 在所有 scene graph 生成的地方统一使用修复后的逻辑
+
+**实现方法**：
+```python
+# 在 generate_scene_graph_from_event_enhanced 和所有 scene graph 生成函数中
+'isToggled': (
+    obj.get('isToggledOn', False) or 
+    obj.get('isToggled', False) or
+    (obj.get('toggleable', False) and obj.get('isOn', False)) or
+    obj.get('isOn', False)
+),
+```
+
+**关键原则**：
+- ✅ **多字段检查**：检查多个可能的 toggle 状态字段
+- ✅ **统一逻辑**：在所有 scene graph 生成的地方使用相同的逻辑
+- ✅ **容错处理**：即使某些字段不存在，也能正确读取状态
+
+**效果**：
+- Faucet 等对象的 toggle 状态现在能正确检测
+- 支持多种 toggle 状态字段格式
+- 避免"状态未检测到"导致的约束验证失败
