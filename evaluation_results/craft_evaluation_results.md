@@ -1,6 +1,6 @@
 # CRAFT 评估结果报告
 
-生成时间: 2026-01-10T23:15:58.319319
+生成时间: 2026-01-15T00:33:00.461324
 
 总任务数: 1
 有真实标签的任务数: 1
@@ -20,7 +20,7 @@
 
 **失败步骤**: 4
 
-**失败类型**: spatial_violation
+**失败类型**: F2
 
 **失败原因**: Postcondition not satisfied in temporal window [4-11]. Last reason: Frame 11: pot is not inside sink
 

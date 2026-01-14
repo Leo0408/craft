@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-01-10T23:15:58.319319",
+  "timestamp": "2026-01-15T00:33:00.461324",
   "total_tasks": 1,
   "tasks_with_gt": 1,
   "statistics": {
@@ -19,14 +19,14 @@
   "results": [
     {
       "task_name": "boilWater",
-      "timestamp": "2026-01-10T23:15:46.426481",
+      "timestamp": "2026-01-15T00:33:00.379295",
       "has_detected_failure": true,
       "num_violations": 4,
       "num_real_errors": 4,
       "num_skipped_constraints": 9,
       "root_violation": null,
       "detected_failure_step": 4,
-      "detected_failure_type": "spatial_violation",
+      "detected_failure_type": "F2",
       "detected_failure_reason": "Postcondition not satisfied in temporal window [4-11]. Last reason: Frame 11: pot is not inside sink",
       "ground_truth": {
         "has_failure": false,

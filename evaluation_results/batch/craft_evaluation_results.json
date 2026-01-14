@@ -1,0 +1,691 @@
+{
+  "timestamp": "2026-01-15T04:04:44.026992",
+  "total_tasks": 10,
+  "tasks_with_gt": 10,
+  "statistics": {
+    "total_tasks": 10,
+    "tasks_with_gt": 10,
+    "metrics": {
+      "detection_accuracy": 0.1,
+      "failure_type_accuracy": 0.0,
+      "timestep_accuracy": 0.0,
+      "attribution_accuracy": 0.0,
+      "false_positive_rate": 1.0,
+      "false_negative_rate": 0.0
+    },
+    "failure_type_metrics": {
+      "wrong order": {
+        "precision": 0,
+        "recall": 0.0,
+        "f1": 0,
+        "tp": 0,
+        "fp": 0,
+        "fn": 1
+      }
+    },
+    "confusion_matrix": {}
+  },
+  "results": [
+    {
+      "task_name": "boil water",
+      "timestamp": "2026-01-15T04:03:57.467190",
+      "has_detected_failure": true,
+      "num_violations": 4,
+      "num_real_errors": 4,
+      "num_skipped_constraints": 12,
+      "root_violation": {
+        "root": {
+          "step": 10,
+          "action": "(toggle_on, StoveBurner-4)",
+          "constraint": {
+            "id": "C90_POST1",
+            "type": "postcondition",
+            "template": "toggled_on(StoveBurner-4)",
+            "description": "StoveBurner-4 must be toggled on",
+            "condition_expr": "toggled_on(StoveBurner-4)",
+            "action": "(toggle_on, StoveBurner-4)",
+            "action_index": 9,
+            "bound_action": "(toggle_on, StoveBurner-4)",
+            "severity": "hard"
+          },
+          "failure_type": "POSTCONDITION VIOLATION",
+          "reason": "Postcondition not satisfied in temporal window [10-14]. Last reason: 4 is not toggled on",
+          "is_warning": false,
+          "diagnostics": {
+            "node_status": {},
+            "attributes_checked": {
+              "4": {
+                "isToggled": false
+              }
+            },
+            "edges_checked": [],
+            "container_items": [],
+            "evaluation_result": null
+          },
+          "eval_time": "after action 10 (帧 10-14 (窗口大小=5))",
+          "frame": 14,
+          "temporal_window": [
+            10,
+            14
+          ]
+        },
+        "derived": [],
+        "root_step": 10,
+        "total_violations": 4,
+        "collapsed_count": 0
+      },
+      "detected_failure_step": null,
+      "detected_failure_type": "F5",
+      "detected_failure_reason": "",
+      "ground_truth": {
+        "has_failure": false,
+        "failure_type": null,
+        "failure_step": "00:36",
+        "failure_reason": "Dropped Pot"
+      },
+      "evaluation": {
+        "detection_correct": false,
+        "failure_type_correct": false,
+        "timestep_correct": false,
+        "attribution_correct": false
+      }
+    },
+    {
+      "task_name": "cook an egg",
+      "timestamp": "2026-01-15T04:04:01.576918",
+      "has_detected_failure": true,
+      "num_violations": 4,
+      "num_real_errors": 4,
+      "num_skipped_constraints": 14,
+      "root_violation": {
+        "root": {
+          "step": 16,
+          "action": "(put_in, EggCracked, Pan)",
+          "constraint": {
+            "id": "C150_POST1",
+            "type": "postcondition",
+            "template": "inside(EggCracked, Pan)",
+            "description": "EggCracked must be inside Pan",
+            "condition_expr": "inside(EggCracked, Pan)",
+            "action": "(put_in, EggCracked, Pan)",
+            "action_index": 15,
+            "bound_action": "(put_in, EggCracked, Pan)",
+            "severity": "hard"
+          },
+          "failure_type": "POSTCONDITION VIOLATION",
+          "reason": "Postcondition not satisfied in temporal window [16-23]. Last reason: Object 'eggcracked' not found",
+          "is_warning": false,
+          "diagnostics": {
+            "node_status": {
+              "eggcracked": "not_found",
+              "pan": "found"
+            },
+            "attributes_checked": {},
+            "edges_checked": [],
+            "container_items": [],
+            "evaluation_result": null
+          },
+          "eval_time": "after action 16 (帧 16-23 (窗口大小=8))",
+          "frame": 23,
+          "temporal_window": [
+            16,
+            23
+          ]
+        },
+        "derived": [],
+        "root_step": 16,
+        "total_violations": 4,
+        "collapsed_count": 0
+      },
+      "detected_failure_step": null,
+      "detected_failure_type": "F5",
+      "detected_failure_reason": "",
+      "ground_truth": {
+        "has_failure": false,
+        "failure_type": null,
+        "failure_step": "00:35",
+        "failure_reason": "Dropped Egg"
+      },
+      "evaluation": {
+        "detection_correct": false,
+        "failure_type_correct": false,
+        "timestep_correct": false,
+        "attribution_correct": false
+      }
+    },
+    {
+      "task_name": "heat potato",
+      "timestamp": "2026-01-15T04:04:05.999314",
+      "has_detected_failure": true,
+      "num_violations": 4,
+      "num_real_errors": 4,
+      "num_skipped_constraints": 14,
+      "root_violation": {
+        "root": {
+          "step": 11,
+          "action": "(toggle_on, Microwave)",
+          "constraint": {
+            "id": "C100_POST1",
+            "type": "postcondition",
+            "template": "toggled_on(Microwave)",
+            "description": "Microwave must be toggled on",
+            "condition_expr": "toggled_on(Microwave)",
+            "action": "(toggle_on, Microwave)",
+            "action_index": 10,
+            "bound_action": "(toggle_on, Microwave)",
+            "severity": "hard"
+          },
+          "failure_type": "POSTCONDITION VIOLATION",
+          "reason": "Postcondition not satisfied in temporal window [11-15]. Last reason: microwave is not toggled on",
+          "is_warning": false,
+          "diagnostics": {
+            "node_status": {},
+            "attributes_checked": {
+              "microwave": {
+                "isToggled": false
+              }
+            },
+            "edges_checked": [],
+            "container_items": [],
+            "evaluation_result": null
+          },
+          "eval_time": "after action 11 (帧 11-15 (窗口大小=5))",
+          "frame": 15,
+          "temporal_window": [
+            11,
+            15
+          ]
+        },
+        "derived": [],
+        "root_step": 11,
+        "total_violations": 4,
+        "collapsed_count": 0
+      },
+      "detected_failure_step": null,
+      "detected_failure_type": "F5",
+      "detected_failure_reason": "",
+      "ground_truth": {
+        "has_failure": false,
+        "failure_type": null,
+        "failure_step": "00:44",
+        "failure_reason": "Dropped Plate"
+      },
+      "evaluation": {
+        "detection_correct": false,
+        "failure_type_correct": false,
+        "timestep_correct": false,
+        "attribution_correct": false
+      }
+    },
+    {
+      "task_name": "make coffee",
+      "timestamp": "2026-01-15T04:04:10.257920",
+      "has_detected_failure": true,
+      "num_violations": 5,
+      "num_real_errors": 5,
+      "num_skipped_constraints": 19,
+      "root_violation": {
+        "root": {
+          "step": 14,
+          "action": "(put_on, Mug, CounterTop)",
+          "constraint": {
+            "id": "C130_POST1",
+            "type": "postcondition",
+            "template": "on_top_of(Mug, CounterTop)",
+            "description": "Mug must be on top of CounterTop",
+            "condition_expr": "on_top_of(Mug, CounterTop)",
+            "action": "(put_on, Mug, CounterTop)",
+            "action_index": 13,
+            "bound_action": "(put_on, Mug, CounterTop)",
+            "severity": "hard"
+          },
+          "failure_type": "POSTCONDITION VIOLATION",
+          "reason": "Postcondition not satisfied in temporal window [14-21]. Last reason: mug is not on top of countertop",
+          "is_warning": false,
+          "diagnostics": {
+            "node_status": {
+              "mug": "found",
+              "countertop": "found"
+            },
+            "attributes_checked": {},
+            "edges_checked": [
+              [
+                "Mug_0b3dbbd3",
+                "CounterTop_c3cd3229",
+                "on_top_of",
+                false
+              ]
+            ],
+            "container_items": [],
+            "evaluation_result": null
+          },
+          "eval_time": "after action 14 (帧 14-21 (窗口大小=8))",
+          "frame": 21,
+          "temporal_window": [
+            14,
+            21
+          ]
+        },
+        "derived": [],
+        "root_step": 14,
+        "total_violations": 5,
+        "collapsed_count": 0
+      },
+      "detected_failure_step": null,
+      "detected_failure_type": "F5",
+      "detected_failure_reason": "",
+      "ground_truth": {
+        "has_failure": false,
+        "failure_type": null,
+        "failure_step": "00:19",
+        "failure_reason": "Dropped Mug"
+      },
+      "evaluation": {
+        "detection_correct": false,
+        "failure_type_correct": false,
+        "timestep_correct": false,
+        "attribution_correct": false
+      }
+    },
+    {
+      "task_name": "make a salad with tomato, potato and lettuce and store in the fridge",
+      "timestamp": "2026-01-15T04:04:17.246747",
+      "has_detected_failure": true,
+      "num_violations": 9,
+      "num_real_errors": 9,
+      "num_skipped_constraints": 36,
+      "root_violation": {
+        "root": {
+          "step": 31,
+          "action": "(put_in, Bowl, Fridge)",
+          "constraint": {
+            "id": "C300_PRE3",
+            "type": "precondition",
+            "template": "container_empty(Fridge)",
+            "description": "Fridge must be empty",
+            "condition_expr": "container_empty(Fridge)",
+            "action": "(put_in, Bowl, Fridge)",
+            "action_index": 30,
+            "bound_action": "(put_in, Bowl, Fridge)",
+            "severity": "hard"
+          },
+          "failure_type": "PRECONDITION VIOLATION",
+          "reason": "Container 'fridge' contains 1 object(s): Egg_9b434f5f",
+          "is_warning": false,
+          "diagnostics": {
+            "node_status": {
+              "fridge": "found"
+            },
+            "attributes_checked": {},
+            "edges_checked": [],
+            "container_items": [
+              "Egg_9b434f5f"
+            ],
+            "evaluation_result": null
+          },
+          "eval_time": "before action 31 (帧 30)",
+          "frame": 30
+        },
+        "derived": [],
+        "root_step": 31,
+        "total_violations": 9,
+        "collapsed_count": 0
+      },
+      "detected_failure_step": null,
+      "detected_failure_type": "F5",
+      "detected_failure_reason": "",
+      "ground_truth": {
+        "has_failure": false,
+        "failure_type": null,
+        "failure_step": [
+          "02:04",
+          "02:05"
+        ],
+        "failure_reason": "Wrong order - knife is put on countertop before slicing tomato"
+      },
+      "evaluation": {
+        "detection_correct": false,
+        "failure_type_correct": false,
+        "timestep_correct": false,
+        "attribution_correct": false
+      }
+    },
+    {
+      "task_name": "Store an egg in a bowl in the fridge",
+      "timestamp": "2026-01-15T04:04:20.928740",
+      "has_detected_failure": true,
+      "num_violations": 4,
+      "num_real_errors": 4,
+      "num_skipped_constraints": 14,
+      "root_violation": {
+        "root": {
+          "step": 17,
+          "action": "(put_in, Pan, Fridge)",
+          "constraint": {
+            "id": "C160_PRE3",
+            "type": "precondition",
+            "template": "container_empty(Fridge)",
+            "description": "Fridge must be empty",
+            "condition_expr": "container_empty(Fridge)",
+            "action": "(put_in, Pan, Fridge)",
+            "action_index": 16,
+            "bound_action": "(put_in, Pan, Fridge)",
+            "severity": "hard"
+          },
+          "failure_type": "PRECONDITION VIOLATION",
+          "reason": "Container 'fridge' contains 2 object(s): Egg_2744cca4, Lettuce_c532b8b7",
+          "is_warning": false,
+          "diagnostics": {
+            "node_status": {
+              "fridge": "found"
+            },
+            "attributes_checked": {},
+            "edges_checked": [],
+            "container_items": [
+              "Egg_2744cca4",
+              "Lettuce_c532b8b7"
+            ],
+            "evaluation_result": null
+          },
+          "eval_time": "before action 17 (帧 16)",
+          "frame": 16
+        },
+        "derived": [],
+        "root_step": 17,
+        "total_violations": 4,
+        "collapsed_count": 0
+      },
+      "detected_failure_step": null,
+      "detected_failure_type": "F5",
+      "detected_failure_reason": "",
+      "ground_truth": {
+        "has_failure": false,
+        "failure_type": null,
+        "failure_step": [
+          "02:07",
+          "02:21"
+        ],
+        "failure_reason": "Wrong plan - robot puts pan instead of bowl in the fridge"
+      },
+      "evaluation": {
+        "detection_correct": false,
+        "failure_type_correct": false,
+        "timestep_correct": false,
+        "attribution_correct": false
+      }
+    },
+    {
+      "task_name": "Close the laptop and put it on the TV stand and switch on television",
+      "timestamp": "2026-01-15T04:04:22.087395",
+      "has_detected_failure": true,
+      "num_violations": 3,
+      "num_real_errors": 3,
+      "num_skipped_constraints": 10,
+      "root_violation": {
+        "root": {
+          "step": 10,
+          "action": "(put_on, RemoteControl, TVStand)",
+          "constraint": {
+            "id": "C90_POST1",
+            "type": "postcondition",
+            "template": "on_top_of(RemoteControl, TVStand)",
+            "description": "RemoteControl must be on top of TVStand",
+            "condition_expr": "on_top_of(RemoteControl, TVStand)",
+            "action": "(put_on, RemoteControl, TVStand)",
+            "action_index": 9,
+            "bound_action": "(put_on, RemoteControl, TVStand)",
+            "severity": "hard"
+          },
+          "failure_type": "POSTCONDITION VIOLATION",
+          "reason": "Postcondition not satisfied in temporal window [10-17]. Last reason: remotecontrol is not on top of tvstand",
+          "is_warning": false,
+          "diagnostics": {
+            "node_status": {
+              "remotecontrol": "found",
+              "tvstand": "found"
+            },
+            "attributes_checked": {},
+            "edges_checked": [
+              [
+                "RemoteControl_6aec8052",
+                "TVStand_db473108",
+                "on_top_of",
+                false
+              ]
+            ],
+            "container_items": [],
+            "evaluation_result": null
+          },
+          "eval_time": "after action 10 (帧 10-17 (窗口大小=8))",
+          "frame": 17,
+          "temporal_window": [
+            10,
+            17
+          ]
+        },
+        "derived": [],
+        "root_step": 10,
+        "total_violations": 3,
+        "collapsed_count": 0
+      },
+      "detected_failure_step": null,
+      "detected_failure_type": "F5",
+      "detected_failure_reason": "",
+      "ground_truth": {
+        "has_failure": false,
+        "failure_type": null,
+        "failure_step": [
+          "00:19",
+          "01:07"
+        ],
+        "failure_reason": "Wrong Plan: TV switched off and laptop turned on"
+      },
+      "evaluation": {
+        "detection_correct": false,
+        "failure_type_correct": false,
+        "timestep_correct": false,
+        "attribution_correct": false
+      }
+    },
+    {
+      "task_name": "toast bread",
+      "timestamp": "2026-01-15T04:04:26.148934",
+      "has_detected_failure": true,
+      "num_violations": 3,
+      "num_real_errors": 3,
+      "num_skipped_constraints": 10,
+      "root_violation": {
+        "root": {
+          "step": 9,
+          "action": "(toggle_on, Toaster)",
+          "constraint": {
+            "id": "C80_POST1",
+            "type": "postcondition",
+            "template": "toggled_on(Toaster)",
+            "description": "Toaster must be toggled on",
+            "condition_expr": "toggled_on(Toaster)",
+            "action": "(toggle_on, Toaster)",
+            "action_index": 8,
+            "bound_action": "(toggle_on, Toaster)",
+            "severity": "hard"
+          },
+          "failure_type": "POSTCONDITION VIOLATION",
+          "reason": "Postcondition not satisfied in temporal window [9-13]. Last reason: toaster is not toggled on",
+          "is_warning": false,
+          "diagnostics": {
+            "node_status": {},
+            "attributes_checked": {
+              "toaster": {
+                "isToggled": false
+              }
+            },
+            "edges_checked": [],
+            "container_items": [],
+            "evaluation_result": null
+          },
+          "eval_time": "after action 9 (帧 9-13 (窗口大小=5))",
+          "frame": 13,
+          "temporal_window": [
+            9,
+            13
+          ]
+        },
+        "derived": [],
+        "root_step": 9,
+        "total_violations": 3,
+        "collapsed_count": 0
+      },
+      "detected_failure_step": null,
+      "detected_failure_type": "F5",
+      "detected_failure_reason": "",
+      "ground_truth": {
+        "has_failure": false,
+        "failure_type": null,
+        "failure_step": "00:43",
+        "failure_reason": "Dropped BreadSliced"
+      },
+      "evaluation": {
+        "detection_correct": false,
+        "failure_type_correct": false,
+        "timestep_correct": false,
+        "attribution_correct": false
+      }
+    },
+    {
+      "task_name": "Serve a glass of warm water at the dining table",
+      "timestamp": "2026-01-15T04:04:39.547462",
+      "has_detected_failure": true,
+      "num_violations": 6,
+      "num_real_errors": 6,
+      "num_skipped_constraints": 22,
+      "root_violation": {
+        "root": {
+          "step": 19,
+          "action": "(put_on, Mug, DiningTable)",
+          "constraint": {
+            "id": "C180_POST1",
+            "type": "postcondition",
+            "template": "on_top_of(Mug, DiningTable)",
+            "description": "Mug must be on top of DiningTable",
+            "condition_expr": "on_top_of(Mug, DiningTable)",
+            "action": "(put_on, Mug, DiningTable)",
+            "action_index": 18,
+            "bound_action": "(put_on, Mug, DiningTable)",
+            "severity": "hard"
+          },
+          "failure_type": "POSTCONDITION VIOLATION",
+          "reason": "Postcondition not satisfied in temporal window [19-26]. Last reason: mug is not on top of diningtable",
+          "is_warning": false,
+          "diagnostics": {
+            "node_status": {
+              "mug": "found",
+              "diningtable": "found"
+            },
+            "attributes_checked": {},
+            "edges_checked": [
+              [
+                "Mug_12ee7ca3",
+                "DiningTable_97938e96",
+                "on_top_of",
+                false
+              ]
+            ],
+            "container_items": [],
+            "evaluation_result": null
+          },
+          "eval_time": "after action 19 (帧 19-26 (窗口大小=8))",
+          "frame": 26,
+          "temporal_window": [
+            19,
+            26
+          ]
+        },
+        "derived": [],
+        "root_step": 19,
+        "total_violations": 6,
+        "collapsed_count": 0
+      },
+      "detected_failure_step": null,
+      "detected_failure_type": "F5",
+      "detected_failure_reason": "",
+      "ground_truth": {
+        "has_failure": true,
+        "failure_type": "wrong order",
+        "failure_step": [
+          "01:04",
+          "01:07"
+        ],
+        "failure_reason": "Wrong order of toggle on microwave and close microwave"
+      },
+      "evaluation": {
+        "detection_correct": true,
+        "failure_type_correct": false,
+        "timestep_correct": false,
+        "attribution_correct": false
+      }
+    },
+    {
+      "task_name": "water the plant",
+      "timestamp": "2026-01-15T04:04:44.026765",
+      "has_detected_failure": true,
+      "num_violations": 3,
+      "num_real_errors": 3,
+      "num_skipped_constraints": 12,
+      "root_violation": {
+        "root": {
+          "step": 9,
+          "action": "(pour, Pot, HousePlant)",
+          "constraint": {
+            "id": "C80_POST1",
+            "type": "postcondition",
+            "template": "filled(HousePlant)",
+            "description": "HousePlant must be filled",
+            "condition_expr": "filled(HousePlant)",
+            "action": "(pour, Pot, HousePlant)",
+            "action_index": 8,
+            "bound_action": "(pour, Pot, HousePlant)",
+            "severity": "hard"
+          },
+          "failure_type": "POSTCONDITION VIOLATION",
+          "reason": "Postcondition not satisfied in temporal window [9-13]",
+          "is_warning": false,
+          "diagnostics": {
+            "node_status": {},
+            "attributes_checked": {},
+            "edges_checked": [],
+            "container_items": [],
+            "evaluation_result": "non_verifiable_constraint"
+          },
+          "eval_time": "after action 9 (帧 9-13 (窗口大小=5))",
+          "frame": 13,
+          "temporal_window": [
+            9,
+            13
+          ]
+        },
+        "derived": [],
+        "root_step": 9,
+        "total_violations": 3,
+        "collapsed_count": 0
+      },
+      "detected_failure_step": null,
+      "detected_failure_type": "F5",
+      "detected_failure_reason": "",
+      "ground_truth": {
+        "has_failure": false,
+        "failure_type": null,
+        "failure_step": [
+          "00:25",
+          "00:39"
+        ],
+        "failure_reason": "Incomplete Plan - Pot is filled with wine already"
+      },
+      "evaluation": {
+        "detection_correct": false,
+        "failure_type_correct": false,
+        "timestep_correct": false,
+        "attribution_correct": false
+      }
+    }
+  ]
+}
