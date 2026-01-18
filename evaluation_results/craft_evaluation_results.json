@@ -1,33 +1,66 @@
 {
-  "timestamp": "2026-01-15T00:33:00.461324",
-  "total_tasks": 1,
-  "tasks_with_gt": 1,
+  "timestamp": "2026-01-18T00:40:26.539891",
+  "total_tasks": 2,
+  "tasks_with_gt": 2,
   "statistics": {
-    "total_tasks": 1,
-    "tasks_with_gt": 1,
+    "total_tasks": 2,
+    "tasks_with_gt": 2,
     "metrics": {
-      "detection_accuracy": 0.0,
-      "failure_type_accuracy": null,
-      "timestep_accuracy": null,
-      "attribution_accuracy": null,
+      "detection_accuracy": 0.5,
+      "failure_type_accuracy": 0.0,
+      "timestep_accuracy": 0.0,
+      "attribution_accuracy": 0.0,
       "false_positive_rate": 1.0,
-      "false_negative_rate": null
+      "false_negative_rate": 0.0
     },
-    "failure_type_metrics": {},
+    "failure_type_metrics": {
+      "occupied": {
+        "precision": 0,
+        "recall": 0.0,
+        "f1": 0,
+        "tp": 0,
+        "fp": 0,
+        "fn": 1
+      }
+    },
     "confusion_matrix": {}
   },
   "results": [
     {
-      "task_name": "boilWater",
-      "timestamp": "2026-01-15T00:33:00.379295",
+      "task_name": "makeCoffee",
+      "timestamp": "2026-01-18T00:40:26.424792",
       "has_detected_failure": true,
-      "num_violations": 4,
-      "num_real_errors": 4,
-      "num_skipped_constraints": 9,
+      "num_violations": 7,
+      "num_real_errors": 7,
+      "num_skipped_constraints": 5,
       "root_violation": null,
       "detected_failure_step": 4,
       "detected_failure_type": "F2",
-      "detected_failure_reason": "Postcondition not satisfied in temporal window [4-11]. Last reason: Frame 11: pot is not inside sink",
+      "detected_failure_reason": "Postcondition not satisfied in temporal window [15-22]. Last reason: Frame 22: Evaluation error: 'set' object has no attribute 'keys'",
+      "ground_truth": {
+        "has_failure": true,
+        "failure_type": "occupied",
+        "failure_step": "00:51",
+        "failure_reason": "The robot failed to put the mug inside the coffee machine because there was already a cup inside it, occupying the space."
+      },
+      "evaluation": {
+        "detection_correct": true,
+        "failure_type_correct": false,
+        "timestep_correct": false,
+        "attribution_correct": false
+      }
+    },
+    {
+      "task_name": "boilWater",
+      "timestamp": "2026-01-18T00:40:26.424951",
+      "has_detected_failure": true,
+      "num_violations": 7,
+      "num_real_errors": 7,
+      "num_skipped_constraints": 5,
+      "root_violation": null,
+      "detected_failure_step": 4,
+      "detected_failure_type": "F2",
+      "detected_failure_reason": "Postcondition not satisfied in temporal window [15-22]. Last reason: Frame 22: Evaluation error: 'set' object has no attribute 'keys'",
       "ground_truth": {
         "has_failure": false,
         "failure_type": null,

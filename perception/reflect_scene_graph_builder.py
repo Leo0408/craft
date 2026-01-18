@@ -142,6 +142,21 @@ class ReflectSceneGraphBuilder:
             self.camera_intrinsics
         )
         
+        # Debug: Print detection results
+        print(f"  🔍 Detection results:")
+        print(f"    Requested objects: {object_list}")
+        print(f"    Detected objects: {len(detections)}")
+        for i, det in enumerate(detections):
+            label = det.get('label', 'unknown')
+            confidence = det.get('confidence', 0.0)
+            print(f"      {i+1}. {label}: confidence={confidence:.3f}")
+        
+        # Check for missing objects
+        detected_labels = [det.get('label', '') for det in detections]
+        missing_objects = [obj for obj in object_list if obj not in detected_labels]
+        if len(missing_objects) > 0:
+            print(f"    ⚠️  Missing objects: {missing_objects}")
+        
         if len(detections) == 0:
             print(f"Nothing detected in frame {step_idx}")
             return local_sg

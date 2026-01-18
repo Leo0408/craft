@@ -371,9 +371,9 @@ def add_rich_spatial_relations(sg: SceneGraph, objects: List[Dict],
                         
                         # Only add if not already exists (metadata takes priority)
                         if edge_key not in sg.edges:
-                        if is_surface:
+                            if is_surface:
                                 sg.add_edge(Edge(node1, node2, "on_top_of"))
-                        else:
+                            else:
                                 sg.add_edge(Edge(node1, node2, "inside"))
             
             # CLOSE TO relations (distance < 0.4m) - for above/below/left/right/blocking

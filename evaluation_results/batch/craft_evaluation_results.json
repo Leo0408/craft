@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-01-15T04:04:44.026992",
+  "timestamp": "2026-01-18T00:43:11.597217",
   "total_tasks": 10,
   "tasks_with_gt": 10,
   "statistics": {
@@ -28,7 +28,7 @@
   "results": [
     {
       "task_name": "boil water",
-      "timestamp": "2026-01-15T04:03:57.467190",
+      "timestamp": "2026-01-18T00:40:30.520934",
       "has_detected_failure": true,
       "num_violations": 4,
       "num_real_errors": 4,
@@ -92,7 +92,7 @@
     },
     {
       "task_name": "cook an egg",
-      "timestamp": "2026-01-15T04:04:01.576918",
+      "timestamp": "2026-01-18T00:40:37.913455",
       "has_detected_failure": true,
       "num_violations": 4,
       "num_real_errors": 4,
@@ -113,15 +113,28 @@
             "severity": "hard"
           },
           "failure_type": "POSTCONDITION VIOLATION",
-          "reason": "Postcondition not satisfied in temporal window [16-23]. Last reason: Object 'eggcracked' not found",
+          "reason": "Postcondition not satisfied in temporal window [16-23]. Last reason: eggcracked is not inside pan (checked both 'inside' and 'on_top_of' for container type)",
           "is_warning": false,
           "diagnostics": {
             "node_status": {
-              "eggcracked": "not_found",
+              "eggcracked": "found",
               "pan": "found"
             },
             "attributes_checked": {},
-            "edges_checked": [],
+            "edges_checked": [
+              [
+                "Egg_67211636",
+                "Pan_21173d15",
+                "inside",
+                false
+              ],
+              [
+                "Egg_67211636",
+                "Pan_21173d15",
+                "on_top_of",
+                false
+              ]
+            ],
             "container_items": [],
             "evaluation_result": null
           },
@@ -155,7 +168,7 @@
     },
     {
       "task_name": "heat potato",
-      "timestamp": "2026-01-15T04:04:05.999314",
+      "timestamp": "2026-01-18T00:40:56.394644",
       "has_detected_failure": true,
       "num_violations": 4,
       "num_real_errors": 4,
@@ -219,10 +232,10 @@
     },
     {
       "task_name": "make coffee",
-      "timestamp": "2026-01-15T04:04:10.257920",
+      "timestamp": "2026-01-18T00:41:01.266455",
       "has_detected_failure": true,
-      "num_violations": 5,
-      "num_real_errors": 5,
+      "num_violations": 6,
+      "num_real_errors": 6,
       "num_skipped_constraints": 19,
       "root_violation": {
         "root": {
@@ -268,7 +281,7 @@
         },
         "derived": [],
         "root_step": 14,
-        "total_violations": 5,
+        "total_violations": 6,
         "collapsed_count": 0
       },
       "detected_failure_step": null,
@@ -289,7 +302,7 @@
     },
     {
       "task_name": "make a salad with tomato, potato and lettuce and store in the fridge",
-      "timestamp": "2026-01-15T04:04:17.246747",
+      "timestamp": "2026-01-18T00:41:45.048547",
       "has_detected_failure": true,
       "num_violations": 9,
       "num_real_errors": 9,
@@ -352,7 +365,7 @@
     },
     {
       "task_name": "Store an egg in a bowl in the fridge",
-      "timestamp": "2026-01-15T04:04:20.928740",
+      "timestamp": "2026-01-18T00:42:12.352932",
       "has_detected_failure": true,
       "num_violations": 4,
       "num_real_errors": 4,
@@ -416,7 +429,7 @@
     },
     {
       "task_name": "Close the laptop and put it on the TV stand and switch on television",
-      "timestamp": "2026-01-15T04:04:22.087395",
+      "timestamp": "2026-01-18T00:42:25.453972",
       "has_detected_failure": true,
       "num_violations": 3,
       "num_real_errors": 3,
@@ -489,7 +502,7 @@
     },
     {
       "task_name": "toast bread",
-      "timestamp": "2026-01-15T04:04:26.148934",
+      "timestamp": "2026-01-18T00:42:37.286589",
       "has_detected_failure": true,
       "num_violations": 3,
       "num_real_errors": 3,
@@ -553,7 +566,7 @@
     },
     {
       "task_name": "Serve a glass of warm water at the dining table",
-      "timestamp": "2026-01-15T04:04:39.547462",
+      "timestamp": "2026-01-18T00:43:02.179060",
       "has_detected_failure": true,
       "num_violations": 6,
       "num_real_errors": 6,
@@ -626,7 +639,7 @@
     },
     {
       "task_name": "water the plant",
-      "timestamp": "2026-01-15T04:04:44.026765",
+      "timestamp": "2026-01-18T00:43:11.597019",
       "has_detected_failure": true,
       "num_violations": 3,
       "num_real_errors": 3,

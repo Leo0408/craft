@@ -14,7 +14,7 @@ class SceneAnalyzer:
     # Spatial relation thresholds (in meters)
     # Note: These will be converted to mm if positions are in mm
     IN_CONTACT_DISTANCE = 0.1  # 0.1 m = 100 mm
-    CLOSE_DISTANCE = 0.4  # 0.4 m = 400 mm
+    CLOSE_DISTANCE = 1.5  # 1.5 m = 1500 mm (increased from 0.4m to handle real-world distances)
     INSIDE_THRESH = 0.5  # 0.5 m = 500 mm
     ON_TOP_OF_THRESH = 0.7  # 0.7 m = 700 mm
     
@@ -71,7 +71,7 @@ class SceneAnalyzer:
         if unit == 'mm':
             # Thresholds are in meters, convert to mm
             in_contact_thresh = self.IN_CONTACT_DISTANCE * 1000  # 100 mm
-            close_thresh = self.CLOSE_DISTANCE * 1000  # 400 mm
+            close_thresh = self.CLOSE_DISTANCE * 1000  # 1500 mm (increased from 400mm)
             on_top_thresh = 0.05 * 1000  # 50 mm (reduced for real-world, was 700mm)
             inside_overlap_ratio = 0.7  # 70% overlap for inside relation
         else:
@@ -80,6 +80,12 @@ class SceneAnalyzer:
             close_thresh = self.CLOSE_DISTANCE
             on_top_thresh = 0.05  # 5 cm (reduced for real-world)
             inside_overlap_ratio = 0.7
+        
+        # Debug: Print thresholds
+        print(f"  🔍 Spatial relation computation:")
+        print(f"     Unit: {unit}")
+        print(f"     Thresholds: close={close_thresh:.2f} ({unit}), contact={in_contact_thresh:.2f} ({unit})")
+        print(f"     Detections: {len(detections)} objects")
         
         for i, det1 in enumerate(detections):
             if det1.get('position_3d') is None:
@@ -95,6 +101,11 @@ class SceneAnalyzer:
                 pos2 = np.array(det2['position_3d'])
                 bbox2 = det2.get('bbox3d')  # Optional: 3D bounding box
                 distance = np.linalg.norm(pos1 - pos2)
+                
+                # Debug: Print distance for first pair
+                if i == 0 and j == 1:
+                    print(f"     Distance between '{det1['label']}' and '{det2['label']}': {distance:.2f} ({unit})")
+                    print(f"     Distance < close_thresh? {distance:.2f} < {close_thresh:.2f} = {distance < close_thresh}")
                 
                 # Priority 1: Check "inside" relation using 3D bounding boxes
                 if bbox1 is not None and bbox2 is not None:
@@ -154,7 +165,15 @@ class SceneAnalyzer:
                 
                 # Priority 4: "near" relation (close but no specific spatial relationship)
                 if distance < close_thresh:
-                        relations.append((det1['label'], det2['label'], 'near', 0.7))
+                    relations.append((det1['label'], det2['label'], 'near', 0.7))
+                    # Debug: Print when near relation is added
+                    if i == 0 and j == 1:
+                        print(f"     ✅ Added 'near' relation between '{det1['label']}' and '{det2['label']}'")
+        
+        # Debug: Print final relations count
+        print(f"     Total relations computed: {len(relations)}")
+        if len(relations) > 0:
+            print(f"     Relations: {relations[:3]}")  # Show first 3
         
         return relations
     

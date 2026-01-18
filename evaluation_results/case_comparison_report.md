@@ -1,13 +1,13 @@
 # CRAFT vs REFLECT: Case 1-3 对比分析报告
 
-生成时间: 2026-01-15 02:54:54
+生成时间: 2026-01-18 00:40:26
 
 ---
 
 ## 总体摘要
 
 - **总测试用例数**: 8
-- **CRAFT 检测到失败**: 8 (100.0%)
+- **CRAFT 检测到失败**: 0 (0.0%)
 - **REFLECT 检测到失败**: 0 (0.0%)
 - **两者都检测到**: 0
 
@@ -22,7 +22,7 @@
 
 
 **Case 统计**:
-- CRAFT 检测: 1/1
+- CRAFT 检测: 0/1
 - REFLECT 检测: 0/1
 
 ### 详细结果
@@ -33,10 +33,10 @@
 
 **CRAFT 检测结果**:
 
-- 是否失败: True
-- 失败类型: F5
+- 是否失败: False
+- 失败类型: None
 - 失败时间步: None
-- 失败原因: The robot failed to fill the mug with water because it did not correctly put the mug in the sink.
+- 失败原因: None
 
 
 **REFLECT 检测结果**:
@@ -54,7 +54,7 @@
 
 
 **Case 统计**:
-- CRAFT 检测: 2/2
+- CRAFT 检测: 0/2
 - REFLECT 检测: 0/2
 
 ### 详细结果
@@ -65,10 +65,10 @@
 
 **CRAFT 检测结果**:
 
-- 是否失败: True
-- 失败类型: F5
+- 是否失败: False
+- 失败类型: None
 - 失败时间步: None
-- 失败原因: The robot failed to make coffee because it didn't successfully turn on the faucet to fill the mug with water.
+- 失败原因: None
 
 
 **REFLECT 检测结果**:
@@ -83,10 +83,10 @@
 
 **CRAFT 检测结果**:
 
-- 是否失败: True
-- 失败类型: F5
+- 是否失败: False
+- 失败类型: None
 - 失败时间步: None
-- 失败原因:  The robot failed to make coffee because the faucet was not toggled on, which is necessary to fill the mug with water.
+- 失败原因: None
 
 
 **REFLECT 检测结果**:
@@ -104,7 +104,7 @@
 
 
 **Case 统计**:
-- CRAFT 检测: 5/5
+- CRAFT 检测: 0/5
 - REFLECT 检测: 0/5
 
 ### 详细结果
@@ -115,10 +115,10 @@
 
 **CRAFT 检测结果**:
 
-- 是否失败: True
-- 失败类型: F5
+- 是否失败: False
+- 失败类型: None
 - 失败时间步: None
-- 失败原因:  The robot failed to fill the mug with water because it did not successfully turn on the faucet. Derived failures as consequences of the root violation: The failure to turn on the faucet resulted in the mug not getting filled with water. This led to a chain reaction of failures in the following steps:
+- 失败原因: None
 
 
 **REFLECT 检测结果**:
@@ -133,10 +133,10 @@
 
 **CRAFT 检测结果**:
 
-- 是否失败: True
-- 失败类型: F5
+- 是否失败: False
+- 失败类型: None
 - 失败时间步: None
-- 失败原因:  The robot failed to make coffee because it could not successfully turn on the faucet. Derived Failures:
+- 失败原因: None
 
 
 **REFLECT 检测结果**:
@@ -151,10 +151,10 @@
 
 **CRAFT 检测结果**:
 
-- 是否失败: True
-- 失败类型: F5
+- 是否失败: False
+- 失败类型: None
 - 失败时间步: None
-- 失败原因:  The robot failed to make coffee because it did not successfully turn on the faucet to fill the mug with water.
+- 失败原因: None
 
 
 **REFLECT 检测结果**:
@@ -169,10 +169,10 @@
 
 **CRAFT 检测结果**:
 
-- 是否失败: True
-- 失败类型: F5
+- 是否失败: False
+- 失败类型: None
 - 失败时间步: None
-- 失败原因:  The robot failed to make coffee because it did not successfully place the mug in the coffee machine. Derived Failures:
+- 失败原因: None
 
 
 **REFLECT 检测结果**:
@@ -187,10 +187,10 @@
 
 **CRAFT 检测结果**:
 
-- 是否失败: True
-- 失败类型: F5
+- 是否失败: False
+- 失败类型: None
 - 失败时间步: None
-- 失败原因:  The robot failed to make coffee because it was unable to successfully turn on the faucet, preventing the mug from being filled with water. Derived Failures as Consequences of the Root Violation:
+- 失败原因: None
 
 
 **REFLECT 检测结果**:

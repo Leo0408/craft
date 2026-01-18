@@ -1,20 +1,30 @@
 # CRAFT 评估结果报告
 
-生成时间: 2026-01-15T00:33:00.461324
+生成时间: 2026-01-18T00:40:26.539891
 
-总任务数: 1
-有真实标签的任务数: 1
+总任务数: 2
+有真实标签的任务数: 2
 
 ## 统计摘要
 
-- **检测准确率**: 0.00%
+- **检测准确率**: 50.00%
+- **失败类型准确率**: 0.00%
+- **时间步准确率**: 0.00%
+- **根因归因准确率**: 0.00%
 - **误报率**: 100.00%
+- **漏报率**: 0.00%
+
+### 各失败类型指标
+
+| 失败类型 | 精确率 | 召回率 | F1分数 | TP | FP | FN |
+|---------|--------|--------|--------|----|----|----|
+| occupied | 0.000 | 0.000 | 0.000 | 0 | 0 | 1 |
 
 ---
 
 ## 详细结果
 
-### 1. boilWater
+### 1. makeCoffee
 
 **检测到失败**: 是
 
@@ -22,9 +32,33 @@
 
 **失败类型**: F2
 
-**失败原因**: Postcondition not satisfied in temporal window [4-11]. Last reason: Frame 11: pot is not inside sink
+**失败原因**: Postcondition not satisfied in temporal window [15-22]. Last reason: Frame 22: Evaluation error: 'set' object has no attribute 'keys'
 
-**违反数量**: 4 (真实错误: 4, 跳过: 9)
+**违反数量**: 7 (真实错误: 7, 跳过: 5)
+
+**真实标签**: 失败类型=occupied, 失败步骤=00:51
+
+**检测准确**: ✓
+
+**类型准确**: ✗
+
+**时间步准确**: ✗
+
+**归因准确**: ✗
+
+---
+
+### 2. boilWater
+
+**检测到失败**: 是
+
+**失败步骤**: 4
+
+**失败类型**: F2
+
+**失败原因**: Postcondition not satisfied in temporal window [15-22]. Last reason: Frame 22: Evaluation error: 'set' object has no attribute 'keys'
+
+**违反数量**: 7 (真实错误: 7, 跳过: 5)
 
 **真实标签**: 失败类型=None, 失败步骤=[['00:31', '00:41']]
 
